@@ -148,8 +148,6 @@ def main():
 
     model = SkipGramNegativeSampling(vocab_size).to(device)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    best_loss = float("inf")
-    no_improve_count = 0
 
     data_loader = DataLoader(
         word2vec_dataset,
