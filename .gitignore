@@ -4,6 +4,8 @@ uv.lock
 .venv/
 ms_marco_train.parquet
 
+*.orig
+*.rej
 
 # boilerplate below
 
