@@ -9,7 +9,9 @@ from transformers import AutoTokenizer
 import utils
 from torch.utils.data import DataLoader
 
-from dataset import TripletDataset, DATASET_FILE
+from dataset import DATASET_FILE
+from model import Tower
+from utils import outfile
 
 embed_dim = 256
 margin = 0.1
@@ -18,7 +20,6 @@ embedding = nn.Embedding(1000, embed_dim)
 batch_size = 8192
 epochs = 5
 dropout_rate = 0.1
-outfile = "data/models.pth"
 
 
 class TripletDataLoader(DataLoader):
@@ -30,18 +31,6 @@ class TripletDataLoader(DataLoader):
             drop_last=True,
             pin_memory=(device.type == "cuda"),
         )
-
-
-class Tower(nn.Module):
-    def __init__(self, vocab_size):
-        super().__init__()
-        self.embedding = nn.Embedding(vocab_size, embed_dim)
-        self.dropout = nn.Dropout(dropout_rate)
-
-    def forward(self, x):
-        x = self.embedding(x)
-        x = x.mean(dim=1)
-        return F.normalize(x, p=2, dim=1)
 
 
 def validate_model(query_tower, doc_tower, validation_dataloader, device):
@@ -111,8 +100,8 @@ def main():
     device = utils.get_device()
     tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
     vocab_size = tokenizer.vocab_size
-    query_tower = Tower(vocab_size).to(device)
-    doc_tower = Tower(vocab_size).to(device)
+    query_tower = Tower(vocab_size, embed_dim, dropout_rate).to(device)
+    doc_tower = Tower(vocab_size, embed_dim, dropout_rate).to(device)
 
     logging.info("Loading datasets")
     datasets = torch.load(DATASET_FILE, weights_only=False)
@@ -177,6 +166,9 @@ def main():
                     "query_tower": query_tower.state_dict(),
                     "doc_tower": doc_tower.state_dict(),
                     "parameters": params,
+                    "vocab_size": vocab_size,
+                    "embed_dim": embed_dim,
+                    "dropout_rate": dropout_rate,
                 },
                 outfile,
             )
