@@ -1,3 +1,4 @@
+data/
 uv.lock
 .venv/
 ms_marco_train.parquet

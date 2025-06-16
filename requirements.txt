@@ -3,7 +3,10 @@ fastapi
 numpy
 pandas
 pyarrow
+redis
 requests
 streamlit
+torch
+tqdm
 uvicorn
 wandb
