@@ -1,7 +1,15 @@
+uv.lock
+.venv/
+ms_marco_train.parquet
+
+
+# boilerplate below
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+
 
 # C extensions
 *.so

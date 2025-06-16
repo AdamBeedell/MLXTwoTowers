@@ -1,0 +1,9 @@
+datasets
+fastapi
+numpy
+pandas
+pyarrow
+requests
+streamlit
+uvicorn
+wandb
