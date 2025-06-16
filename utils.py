@@ -1,4 +1,12 @@
+import logging
 import torch
+
+
+def setup_logging():
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S"
+    )
+
 
 def get_device():
     if torch.cuda.is_available():
@@ -7,4 +15,3 @@ def get_device():
         return torch.device("mps")
     else:
         return torch.device("cpu")
-
