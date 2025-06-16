@@ -1,3 +1,5 @@
+import time
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,27 +9,34 @@ import logging
 from typing import Tuple
 from torch.utils.data import Dataset, DataLoader
 import argparse
-
+from tqdm import tqdm
 import utils
+import random
 
 min_freq = 10
 context_size = 2
 embed_dim = 300
-batch_size = 512
 epochs = 5
 learning_rate = 0.01
 patience = 10000
 
 parser = argparse.ArgumentParser(
-    description="Train CBOW word2vec model with negative sampling."
+    description="Train skipgram word2vec model with negative sampling."
 )
-parser.add_argument("--corpus", required=True, help="Input text file for training")
-parser.add_argument("--model", required=True, help="Output file to save embeddings")
+parser.add_argument(
+    "--corpus", default="data/text8", help="Input text file for training"
+)
+parser.add_argument(
+    "--model",
+    default="data/word2vec_skipgram.pth",
+    help="Output file to save embeddings",
+)
+parser.add_argument("--batch_size", default=8192, type=int, help="Batch size")
 args = parser.parse_args()
 
 input_file = args.corpus
 outfile = args.model
-
+batch_size = args.batch_size
 utils.setup_logging()
 
 
@@ -39,9 +48,7 @@ class SkipGramDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor]:
-        center, context = self.data[
-            idx
-        ]  # Now center, context instead of context, target
+        center, context = self.data[idx]  #
         return torch.tensor(center, dtype=torch.long), torch.tensor(
             context, dtype=torch.long
         )
@@ -52,12 +59,25 @@ def make_skipgram_dataset(indices):
     dataset = []
     for i in range(context_size, len(indices) - context_size):
         center_word = indices[i]
-        # Generate all context words within window
-        for j in range(i - context_size, i + context_size + 1):
-            if j != i:  # Skip the center word itself
+        # Dynamic window - randomly choose smaller windows
+        dynamic_window = random.randint(1, context_size)  # 1 or 2 instead of always 2
+        for j in range(i - dynamic_window, i + dynamic_window + 1):
+            if j != i and 0 <= j < len(indices):
                 context_word = indices[j]
                 dataset.append((center_word, context_word))
     return dataset
+
+
+# Add this to reduce very common words like "the", "and"
+def subsample_frequent_words(indices, word_counts, threshold=1e-3):
+    total_words = sum(word_counts.values())
+    subsampled = []
+    for word_idx in indices:
+        word_freq = word_counts[word_idx] / total_words
+        prob = (threshold / word_freq) ** 0.5
+        if random.random() < prob:
+            subsampled.append(word_idx)
+    return subsampled
 
 
 # === Model ===
@@ -116,10 +136,21 @@ def main():
 
     # === Convert text to indices ===
     indices = [word_to_ix[word] for word in text if word in word_to_ix]
+    index_counts = Counter(indices)
+    indices = subsample_frequent_words(indices, index_counts, threshold=1e-3)
+    logging.info(
+        f"After subsampling: {len(indices)} tokens (was {len([word_to_ix[word] for word in text if word in word_to_ix])})"
+    )
 
     dataset = make_skipgram_dataset(indices)
     word2vec_dataset = SkipGramDataset(dataset)
     pin_memory = device.type == "cuda"
+
+    model = SkipGramNegativeSampling(vocab_size).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    best_loss = float("inf")
+    no_improve_count = 0
+
     data_loader = DataLoader(
         word2vec_dataset,
         batch_size=batch_size,
@@ -128,14 +159,18 @@ def main():
         pin_memory=pin_memory,
     )
 
-    logging.info(f"Dataset size: {len(dataset)}")
-
-    model = SkipGramNegativeSampling(vocab_size).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    best_loss = float("inf")
-    no_improve_count = 0
+    logging.info(f"Dataset size: {len(dataset)} batch_size {batch_size}")
+    start_time = time.time()
     for epoch in range(epochs):
-        for i, (center_batch, context_batch) in enumerate(data_loader):  # Swapped order
+        pbar = tqdm(
+            enumerate(data_loader),
+            total=len(data_loader),
+            desc=f"Epoch {epoch + 1}/{epochs}",
+            ncols=100,
+            unit="batch",
+        )
+        total_samples = 0
+        for i, (center_batch, context_batch) in pbar:
             center_batch = center_batch.to(device, non_blocking=True)
             context_batch = context_batch.to(device, non_blocking=True)
             neg_samples = get_negative_samples(
@@ -147,24 +182,28 @@ def main():
 
             loss.backward()
             optimizer.step()
-            if loss.item() < best_loss:
-                best_loss = loss.item()
-                no_improve_count = 0
-                torch.save(
+
+            total_samples += len(center_batch)
+            if i % 10 == 0:
+                pbar.set_postfix(
                     {
-                        "embeddings": model.in_embed.weight.data.cpu(),
-                        "word_to_ix": word_to_ix,
-                        "ix_to_word": ix_to_word,
-                    },
-                    outfile,
+                        "samples": total_samples,
+                        "loss": f"{loss.item():.3f}",
+                    }
                 )
-            else:
-                no_improve_count += 1
-            if no_improve_count > patience:
-                logging.info(f"Early stopping at epoch {epoch + 1}, step {i}")
-                break
-            if i % 1000 == 999:
-                logging.info(f"Epoch {epoch+1}, Step {i+1}, Loss: {loss.item():.4f}")
+        pure_training_time = time.time() - start_time
+        samples_per_sec = total_samples / pure_training_time
+        logging.info(
+            f"Total training time at batch size {batch_size}: {pure_training_time:.1f} samples/sec {samples_per_sec:.1f}"
+        )
+        torch.save(
+            {
+                "embeddings": model.in_embed.weight.data.cpu(),
+                "word_to_ix": word_to_ix,
+                "ix_to_word": ix_to_word,
+            },
+            outfile,
+        )
     logging.info(f"✅ Embeddings saved to {outfile}")
 
 
