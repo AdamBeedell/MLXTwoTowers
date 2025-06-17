@@ -2,7 +2,8 @@ import logging
 
 import redis
 import numpy as np
-import pickle
+from redis.commands.search.field import TextField, VectorField
+from redis.commands.search.index_definition import IndexDefinition, IndexType
 
 from datasets import load_dataset
 from tqdm import tqdm
@@ -108,14 +109,20 @@ def store_embeddings_in_redis(doc_metadata, embeddings, redis_client):
 
     redis_client.delete("doc_embeddings")
     redis_client.delete("doc_metadata")
+    # Delete previous doc:* keys if any
+    for key in redis_client.scan_iter("doc:*"):
+        redis_client.delete(key)
+
     for doc_meta, embedding in tqdm(
         zip(doc_metadata, embeddings), desc="Storing in Redis"
     ):
         # Store embedding as binary data
-        embedding_bytes = pickle.dumps(embedding.astype(np.float32))
+        embedding_bytes = embedding.astype(np.float32).tobytes()
         doc_id = doc_meta["id"]
-        redis_client.hset("doc_embeddings", doc_id, embedding_bytes)
-        redis_client.hset("doc_metadata", doc_id, pickle.dumps(doc_meta))
+        redis_client.hset(
+            f"doc:{doc_id}",
+            mapping={"text": doc_meta["text"], "embedding": embedding_bytes},
+        )
 
     logging.info(f"Stored {len(doc_metadata)} document embeddings in Redis")
     # Create some indexes for faster retrieval
@@ -132,6 +139,27 @@ def store_embeddings_in_redis(doc_metadata, embeddings, redis_client):
     logging.info("Corpus breakdown:")
     for split, count in splits.items():
         logging.info(f"  {split}: {count:,} documents")
+
+
+def create_redis_index(redis_client, dim):
+
+    try:
+        redis_client.ft("doc_index").dropindex(delete_documents=False)
+    except Exception:
+        pass
+
+    logging.info("Creating Redis index...")
+    redis_client.ft("doc_index").create_index(
+        fields=[
+            TextField("text"),
+            VectorField(
+                "embedding",
+                "FLAT",
+                {"TYPE": "FLOAT32", "DIM": dim, "DISTANCE_METRIC": "COSINE"},
+            ),
+        ],
+        definition=IndexDefinition(prefix=["doc:"], index_type=IndexType.HASH),
+    )
 
 
 def main():
@@ -157,6 +185,8 @@ def main():
 
     logging.info("Storing in Redis...")
     store_embeddings_in_redis(doc_metadata, embeddings, redis_client)
+
+    create_redis_index(redis_client, embeddings.shape[1])
 
     # Store metadata
     redis_client.set("embedding_dim", embeddings.shape[1])

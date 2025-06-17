@@ -1,7 +1,6 @@
 import json
 from contextlib import asynccontextmanager
 import os
-import pickle
 import numpy as np
 import redis
 import torch
@@ -9,6 +8,7 @@ from fastapi import FastAPI
 from transformers import AutoTokenizer
 from model import Tower
 import utils
+from redis.commands.search.query import Query
 
 # Write the model version here or find some way to derive it from the model
 # eg. from the model files name
@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
     ).to(device)
     query_tower.load_state_dict(checkpoint["query_tower"])
     tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
-    redis_client = redis.Redis(host="localhost", port=6379, db=0)
+    redis_client = redis.Redis(host="redis-stack", port=6379, db=0)
     yield
 
 
@@ -90,10 +90,7 @@ def search(query):
 
 
 def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
-    """Search MS MARCO documents with metadata"""
     query_tower.eval()
-
-    # Encode query
     with torch.no_grad():
         tokenized_query = tokenizer(
             query,
@@ -103,41 +100,40 @@ def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
             max_length=128,
         )["input_ids"].to(device)
 
-        query_embedding = query_tower(tokenized_query).cpu().numpy()[0]
-
-    # Get all document embeddings
-    similarities = []
-
-    for doc_id_bytes, embedding_bytes in redis_client.hscan_iter("doc_embeddings"):
-        doc_id = doc_id_bytes.decode("utf-8")
-        embedding = pickle.loads(embedding_bytes)
-
-        # Calculate cosine similarity
-        similarity = np.dot(query_embedding, embedding) / (
-            np.linalg.norm(query_embedding) * np.linalg.norm(embedding)
+        query_embedding = (
+            query_tower(tokenized_query).cpu().numpy().astype(np.float32).tobytes()
         )
-        similarities.append((doc_id, float(similarity)))
 
-    # Get top-k
-    top_docs = sorted(similarities, key=lambda x: x[1], reverse=True)[:top_k]
+    redis_query = f"*=>[KNN {top_k} @embedding $vec_param]"
+    query_obj = (
+        Query(redis_query)
+        .return_fields("text", "embedding", "text")
+        .with_scores()
+        .paging(0, top_k)
+        .dialect(2)
+    )
 
-    # Fetch metadata for top results
-    results = []
-    for doc_id, similarity in top_docs:
-        metadata_bytes = redis_client.hget("doc_metadata", doc_id)
-        metadata = pickle.loads(metadata_bytes)
-        results.append((doc_id, similarity, metadata["text"]))
+    results = redis_client.ft("doc_index").search(
+        query_obj, query_params={"vec_param": query_embedding}
+    )
 
-    return results
+    return [(doc.id, float(doc.score), doc.text) for doc in results.docs]
 
 
 ##### Log The Request #####
 def log_request(log_path, message):
     # print the message and then write it to the log
-    pass
+    print(message)
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    with open(log_path, "a") as log_file:
+        log_file.write(message + "\n")
 
 
 ##### Read The Logs #####
 def read_logs(log_path):
     # read the logs from the log_path
-    pass
+    if not os.path.exists(log_path):
+        return []
+    with open(log_path, "r") as log_file:
+        lines = log_file.readlines()
+    return [line.strip() for line in lines]
