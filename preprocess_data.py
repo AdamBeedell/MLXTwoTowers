@@ -1,6 +1,5 @@
 import logging
 from datasets import load_dataset
-from transformers import AutoTokenizer
 import torch
 from dataset import TripletDataset, DATASET_FILE
 import utils
@@ -9,7 +8,7 @@ import utils
 def main():
     utils.setup_logging()
     device = utils.get_device()
-    tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
+    tokenizer = utils.get_tokenizer()
 
     logging.info("Loading MS MARCO dataset...")
     ms_marco_data = load_dataset("ms_marco", "v1.1")

@@ -6,7 +6,6 @@ import numpy as np
 import redis
 import torch
 from fastapi import FastAPI
-from transformers import AutoTokenizer
 from model import Tower
 import utils
 from redis.commands.search.query import Query
@@ -42,7 +41,7 @@ async def lifespan(app: FastAPI):
         dropout_rate=checkpoint["dropout_rate"],
     ).to(device)
     query_tower.load_state_dict(checkpoint["query_tower"])
-    tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
+    tokenizer = utils.get_tokenizer()
     redis_client = redis.Redis(host="redis-stack", port=6379, db=0)
     yield
 

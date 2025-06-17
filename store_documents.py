@@ -8,7 +8,6 @@ from redis.commands.search.index_definition import IndexDefinition, IndexType
 from datasets import load_dataset
 from tqdm import tqdm
 import torch
-from transformers import AutoTokenizer
 
 import utils
 from model import Tower
@@ -164,7 +163,7 @@ def main():
     documents = load_document_corpus()
 
     logging.info("Encoding documents...")
-    tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
+    tokenizer = utils.get_tokenizer()
     doc_metadata, embeddings = encode_all_documents(
         tokenizer, doc_tower, documents, device
     )

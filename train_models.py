@@ -1,11 +1,8 @@
 import logging
-
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from tqdm import tqdm
-from transformers import AutoTokenizer
 import utils
 from torch.utils.data import DataLoader
 
@@ -16,10 +13,10 @@ from utils import MODEL_FILE
 embed_dim = 256
 margin = 0.1
 learning_rate = 0.0005
-embedding = nn.Embedding(1000, embed_dim)
-batch_size = 8192
-epochs = 5
+batch_size = 512
+epochs = 15
 dropout_rate = 0.1
+patience = 3
 
 
 class TripletDataLoader(DataLoader):
@@ -53,6 +50,10 @@ def validate_model(query_tower, doc_tower, validation_dataloader, device):
             # Calculate loss (same as training)
             dst_pos = F.cosine_similarity(q, pos)
             dst_neg = F.cosine_similarity(q, neg)
+            margin_values = (dst_pos - dst_neg).detach().cpu()
+            logging.info(
+                f"[Validation] Avg Margin: {margin_values.mean():.4f}, Min: {margin_values.min():.4f}, Max: {margin_values.max():.4f}"
+            )
             loss = torch.max(zero, margin - dst_pos + dst_neg).mean()
 
             total_loss += loss.item()
@@ -98,7 +99,7 @@ def calculate_retrieval_metrics(
 def main():
     utils.setup_logging()
     device = utils.get_device()
-    tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
+    tokenizer = utils.get_tokenizer()
     vocab_size = tokenizer.vocab_size
     query_tower = Tower(vocab_size, embed_dim, dropout_rate).to(device)
     doc_tower = Tower(vocab_size, embed_dim, dropout_rate).to(device)
@@ -117,9 +118,10 @@ def main():
     params = list(query_tower.parameters()) + list(doc_tower.parameters())
     optimizer = optim.Adam(params, lr=learning_rate)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
-    logging.info("Starting training")
+    logging.info(f"Starting training batch size {batch_size}")
     zero = torch.tensor(0.0)
     best_val_loss = float("inf")
+    patience_counter = 0
     for epoch in range(epochs):
         total_train_loss = 0.0
         num_train_batches = 0
@@ -156,10 +158,14 @@ def main():
         logging.info(f"Epoch {epoch + 1}/{epochs}")
         logging.info(f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
         logging.info(f"Train Retrieval Accuracy: {retrieval_acc:.4f}")
+        margin_values = (dst_pos - dst_neg).detach().cpu()
+        logging.info(
+            f"Avg Margin: {margin_values.mean():.4f}, Min Margin: {margin_values.min():.4f}, Max Margin: {margin_values.max():.4f}"
+        )
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            # Save best model checkpoint
+            patience_counter = 0
             torch.save(
                 {
                     "query_tower": query_tower.state_dict(),
@@ -171,6 +177,11 @@ def main():
                 },
                 MODEL_FILE,
             )
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                logging.info(f"Early stopping triggered after {epoch + 1} epochs.")
+                break
     checkpoint = torch.load(MODEL_FILE)
     query_tower.load_state_dict(checkpoint["query_tower"])
     doc_tower.load_state_dict(checkpoint["doc_tower"])
