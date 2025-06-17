@@ -5,14 +5,14 @@ import torch.optim as optim
 from tqdm import tqdm
 import utils
 from torch.utils.data import DataLoader
-
+import numpy as np
 from dataset import DATASET_FILE
 from model import Tower
 from utils import MODEL_FILE
 
 embed_dim = 256
-margin = 0.1
-learning_rate = 0.0005
+margin = 0.3
+learning_rate = 5e-5
 batch_size = 512
 epochs = 15
 dropout_rate = 0.1
@@ -38,6 +38,13 @@ def validate_model(query_tower, doc_tower, validation_dataloader, device):
     num_batches = 0
     zero = torch.tensor(0.0).to(device)
 
+    all_margins = []
+    pos_similarities = []
+    neg_similarities = []
+
+    correct_at_k = 0
+    total_queries = 0
+
     with torch.no_grad():  # Important: no gradients during validation
         for batch in validation_dataloader:
             query, positive, negative = [b.to(device) for b in batch.values()]
@@ -50,50 +57,40 @@ def validate_model(query_tower, doc_tower, validation_dataloader, device):
             # Calculate loss (same as training)
             dst_pos = F.cosine_similarity(q, pos)
             dst_neg = F.cosine_similarity(q, neg)
-            margin_values = (dst_pos - dst_neg).detach().cpu()
-            logging.info(
-                f"[Validation] Avg Margin: {margin_values.mean():.4f}, Min: {margin_values.min():.4f}, Max: {margin_values.max():.4f}"
-            )
+
+            pos_similarities.extend(dst_pos.cpu().numpy())
+            neg_similarities.extend(dst_neg.cpu().numpy())
+            margins = (dst_pos - dst_neg).cpu().numpy()
+            all_margins.extend(margins)
+
+            # Check if positive document ranks higher than negative
+            correct_at_k += (dst_pos > dst_neg).sum().item()
+            total_queries += dst_pos.size(0)
+
             loss = torch.max(zero, margin - dst_pos + dst_neg).mean()
 
             total_loss += loss.item()
             num_batches += 1
 
+    logging.info(f"Validation Stats:")
+    logging.info(
+        f"  Pos Similarities - Mean: {np.mean(pos_similarities):.4f}, Std: {np.std(pos_similarities):.4f}"
+    )
+    logging.info(
+        f"  Neg Similarities - Mean: {np.mean(neg_similarities):.4f}, Std: {np.std(neg_similarities):.4f}"
+    )
+    logging.info(
+        f"  Margins - Mean: {np.mean(all_margins):.4f}, Std: {np.std(all_margins):.4f}"
+    )
+    logging.info(
+        f"  Positive Margins: {(np.array(all_margins) > 0).sum()}/{len(all_margins)} ({(np.array(all_margins) > 0).mean()*100:.1f}%)"
+    )
+    recall_at_k = correct_at_k / total_queries if total_queries > 0 else 0.0
+
     query_tower.train()  # Set back to training mode
     doc_tower.train()
 
-    return total_loss / num_batches
-
-
-def calculate_retrieval_metrics(
-    query_tower, doc_tower, validation_dataset, device, k=5
-):
-    """Calculate retrieval-specific metrics like accuracy@k"""
-    query_tower.eval()
-    doc_tower.eval()
-
-    correct_at_k = 0
-    total_queries = 0
-
-    with torch.no_grad():
-        for item in validation_dataset:
-            query = item["query"].unsqueeze(0).to(device)
-            positive = item["positive"].unsqueeze(0).to(device)
-            negative = item["negative"].unsqueeze(0).to(device)
-
-            q_enc = query_tower(query)
-            pos_enc = doc_tower(positive)
-            neg_enc = doc_tower(negative)
-
-            pos_sim = F.cosine_similarity(q_enc, pos_enc)
-            neg_sim = F.cosine_similarity(q_enc, neg_enc)
-
-            # Check if positive document ranks higher than negative
-            if pos_sim > neg_sim:
-                correct_at_k += 1
-            total_queries += 1
-
-    return correct_at_k / total_queries if total_queries > 0 else 0.0
+    return total_loss / num_batches, recall_at_k
 
 
 def main():
@@ -117,7 +114,9 @@ def main():
     test_dataloader = TripletDataLoader(test_dataset, device)
     params = list(query_tower.parameters()) + list(doc_tower.parameters())
     optimizer = optim.Adam(params, lr=learning_rate)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", patience=2, factor=0.5
+    )
     logging.info(f"Starting training batch size {batch_size}")
     zero = torch.tensor(0.0)
     best_val_loss = float("inf")
@@ -125,6 +124,7 @@ def main():
     for epoch in range(epochs):
         total_train_loss = 0.0
         num_train_batches = 0
+        all_train_margins = []
         for i, batch in enumerate(tqdm(training_dataloader, desc=f"Epoch {epoch + 1}")):
             batch = {k: v.to(device) for k, v in batch.items()}
 
@@ -134,6 +134,15 @@ def main():
 
             dst_pos = F.cosine_similarity(q, pos)
             dst_neg = F.cosine_similarity(q, neg)
+
+            margins = (dst_pos - dst_neg).detach().cpu()
+            all_train_margins.extend(margins.tolist())
+            torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
+
+            if (i + 1) % 50 == 0:  # Every 50 batches
+                logging.info(
+                    f"Batch {i}: Train Pos Sim: {dst_pos.mean():.4f}, Neg Sim: {dst_neg.mean():.4f}, Margin: {(dst_pos - dst_neg).mean():.4f}"
+                )
 
             optimizer.zero_grad()
             loss = torch.max(zero, margin - dst_pos + dst_neg).mean()
@@ -146,22 +155,20 @@ def main():
             total_train_loss += loss.item()
             num_train_batches += 1
 
-        scheduler.step()
+        margins_tensor = torch.tensor(all_train_margins)
+        logging.info(
+            f"Train Margins - Avg: {margins_tensor.mean():.4f}, Min: {margins_tensor.min():.4f}, Max: {margins_tensor.max():.4f}"
+        )
+
         avg_train_loss = total_train_loss / num_train_batches
-        avg_val_loss = validate_model(
+        avg_val_loss, retrieval_acc = validate_model(
             query_tower, doc_tower, validation_dataloader, device
         )
-        retrieval_acc = calculate_retrieval_metrics(
-            query_tower, doc_tower, validation_dataset, device
-        )
+        scheduler.step(avg_val_loss)
 
         logging.info(f"Epoch {epoch + 1}/{epochs}")
         logging.info(f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
-        logging.info(f"Train Retrieval Accuracy: {retrieval_acc:.4f}")
-        margin_values = (dst_pos - dst_neg).detach().cpu()
-        logging.info(
-            f"Avg Margin: {margin_values.mean():.4f}, Min Margin: {margin_values.min():.4f}, Max Margin: {margin_values.max():.4f}"
-        )
+        logging.info(f"Val Retrieval Accuracy: {retrieval_acc:.4f}")
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
@@ -185,11 +192,10 @@ def main():
     checkpoint = torch.load(MODEL_FILE)
     query_tower.load_state_dict(checkpoint["query_tower"])
     doc_tower.load_state_dict(checkpoint["doc_tower"])
-    test_loss = validate_model(query_tower, doc_tower, test_dataloader, device)
-    logging.info(f"Test Loss: {test_loss:.4f}")
-    retrieval_acc = calculate_retrieval_metrics(
-        query_tower, doc_tower, test_dataset, device
+    test_loss, retrieval_acc = validate_model(
+        query_tower, doc_tower, test_dataloader, device
     )
+    logging.info(f"Test Loss: {test_loss:.4f}")
     logging.info(f"Test Retrieval Accuracy: {retrieval_acc:.4f}")
 
 

@@ -10,6 +10,9 @@ class Tower(nn.Module):
         self.input = nn.Linear(embed_dim, embed_dim)
         self.hidden = nn.Linear(embed_dim, embed_dim)
         self.dropout = nn.Dropout(dropout_rate)
+        nn.init.xavier_uniform_(self.input.weight)
+        nn.init.xavier_uniform_(self.hidden.weight)
+        nn.init.normal_(self.embedding.weight, std=0.1)
 
     def forward(self, x):
         emb = self.embedding(x)
