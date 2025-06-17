@@ -97,12 +97,17 @@ def encode_all_documents(tokenizer, doc_tower, documents, device, batch_size=100
                         "is_selected": doc.get("is_selected", False),
                     }
                 )
+    logging.info(
+        f"Saving {len(doc_metadata)} metadata and {len(all_embeddings)} embeddings to Redis"
+    )
     return doc_metadata, np.array(all_embeddings)
 
 
 def store_embeddings_in_redis(doc_metadata, embeddings, redis_client):
     """Store document embeddings in Redis"""
 
+    redis_client.delete("doc_embeddings")
+    redis_client.delete("doc_metadata")
     for doc_meta, embedding in tqdm(
         zip(doc_metadata, embeddings), desc="Storing in Redis"
     ):
@@ -110,7 +115,7 @@ def store_embeddings_in_redis(doc_metadata, embeddings, redis_client):
         embedding_bytes = pickle.dumps(embedding.astype(np.float32))
         doc_id = doc_meta["id"]
         redis_client.hset("doc_embeddings", doc_id, embedding_bytes)
-        redis_client.sadd("doc_metadata", doc_id, pickle.dumps(doc_meta))
+        redis_client.hset("doc_metadata", doc_id, pickle.dumps(doc_meta))
 
     logging.info(f"Stored {len(doc_metadata)} document embeddings in Redis")
     # Create some indexes for faster retrieval
@@ -134,18 +139,21 @@ def main():
     device = utils.get_device()
     redis_client = redis.Redis(host="localhost", port=6379, db=0)
     checkpoint = torch.load(utils.outfile, map_location=device)
-    params = checkpoint["parameters"]
-    logging.info(f"Loaded model with parameters: {params}")
-    doc_params = params[len(params) // 2 :]
-    logging.info(f"Using parameters for document encoder: {doc_params}")
-    doc_tower = Tower(**doc_params).to(device)
+    doc_tower = Tower(
+        vocab_size=checkpoint["vocab_size"],
+        embed_dim=checkpoint["embed_dim"],
+        dropout_rate=checkpoint["dropout_rate"],
+    ).to(device)
     doc_tower.load_state_dict(checkpoint["doc_tower"])
 
     logging.info("Loading MS MARCO dataset...")
     documents = load_document_corpus()
 
     logging.info("Encoding documents...")
-    doc_metadata, embeddings = encode_all_documents(doc_tower, documents, device)
+    tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
+    doc_metadata, embeddings = encode_all_documents(
+        tokenizer, doc_tower, documents, device
+    )
 
     logging.info("Storing in Redis...")
     store_embeddings_in_redis(doc_metadata, embeddings, redis_client)

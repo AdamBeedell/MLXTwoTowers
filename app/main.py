@@ -116,7 +116,7 @@ def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
         similarity = np.dot(query_embedding, embedding) / (
             np.linalg.norm(query_embedding) * np.linalg.norm(embedding)
         )
-        similarities.append((doc_id, similarity))
+        similarities.append((doc_id, float(similarity)))
 
     # Get top-k
     top_docs = sorted(similarities, key=lambda x: x[1], reverse=True)[:top_k]
