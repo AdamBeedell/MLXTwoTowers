@@ -163,7 +163,7 @@ def main():
     documents = load_document_corpus()
 
     logging.info("Encoding documents...")
-    tokenizer = utils.get_tokenizer()
+    tokenizer = utils.get_embeddings()
     doc_metadata, embeddings = encode_all_documents(
         tokenizer, doc_tower, documents, device
     )

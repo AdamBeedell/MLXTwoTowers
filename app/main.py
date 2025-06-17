@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
         dropout_rate=checkpoint["dropout_rate"],
     ).to(device)
     query_tower.load_state_dict(checkpoint["query_tower"])
-    tokenizer = utils.get_tokenizer()
+    tokenizer = utils.get_embeddings()
     redis_client = redis.Redis(host="redis-stack", port=6379, db=0)
     yield
 

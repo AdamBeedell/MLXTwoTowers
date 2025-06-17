@@ -1,6 +1,5 @@
 import logging
 import torch
-from transformers import AutoTokenizer
 
 MODEL_FILE = "data/models.pth"
 
@@ -18,7 +17,3 @@ def get_device():
         return torch.device("mps")
     else:
         return torch.device("cpu")
-
-
-def get_tokenizer():
-    return AutoTokenizer.from_pretrained("sentence-transformers/msmarco-MiniLM-L-6-v3")

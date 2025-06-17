@@ -1,0 +1,64 @@
+import torch
+
+WORD2VEC_FILE = "data/word2vec_skipgram.pth"
+
+
+class Word2VecTokenizer:
+    def __init__(self):
+        checkpoint = torch.load(WORD2VEC_FILE, weights_only=False)
+        self.embeddings = checkpoint["embeddings"]
+        self.word_to_ix = checkpoint["word_to_ix"]
+        self.ix_to_word = checkpoint["ix_to_word"]
+
+        # Add special tokens if not present
+        if "<PAD>" not in self.word_to_ix:
+            # Shift all existing indices up by 2 to make room for special tokens
+            old_word_to_ix = self.word_to_ix.copy()
+            old_ix_to_word = self.ix_to_word.copy()
+
+            self.word_to_ix = {"<PAD>": 0, "<UNK>": 1}
+            self.ix_to_word = {0: "<PAD>", 1: "<UNK>"}
+
+            # Reindex existing vocabulary
+            for word, old_idx in old_word_to_ix.items():
+                new_idx = old_idx + 2
+                self.word_to_ix[word] = new_idx
+                self.ix_to_word[new_idx] = word
+        self.vocab_size = len(self.word_to_ix)
+        self.unk_token = "<UNK>"
+        self.pad_token = "<PAD>"
+
+    def __call__(
+        self,
+        texts,
+        max_length=128,
+        padding="max_length",
+        truncation=True,
+        return_tensors="pt",
+    ):
+        if isinstance(texts, str):
+            texts = [texts]
+
+        tokenized_batch = []
+        for text in texts:
+            # Simple whitespace tokenization
+            words = text.lower().split()[: max_length if truncation else len(words)]
+
+            # Convert to indices
+            indices = [
+                self.word_to_ix.get(word, self.word_to_ix.get(self.unk_token, 1))
+                for word in words
+            ]
+
+            # Pad to max_length
+            if padding == "max_length":
+                indices = indices[:max_length]
+                indices += [self.word_to_ix[self.pad_token]] * (
+                    max_length - len(indices)
+                )
+
+            tokenized_batch.append(indices)
+
+        if return_tensors == "pt":
+            return {"input_ids": torch.tensor(tokenized_batch, dtype=torch.long)}
+        return tokenized_batch

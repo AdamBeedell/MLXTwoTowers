@@ -3,12 +3,13 @@ from datasets import load_dataset
 import torch
 from dataset import TripletDataset, DATASET_FILE
 import utils
+from tokenizer import Word2VecTokenizer
 
 
 def main():
     utils.setup_logging()
     device = utils.get_device()
-    tokenizer = utils.get_tokenizer()
+    tokenizer = Word2VecTokenizer()
 
     logging.info("Loading MS MARCO dataset...")
     ms_marco_data = load_dataset("ms_marco", "v1.1")

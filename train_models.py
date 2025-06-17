@@ -7,11 +7,12 @@ import utils
 from torch.utils.data import DataLoader
 import numpy as np
 from dataset import DATASET_FILE
-from model import Tower
+from model import QueryTower, DocTower
+from tokenizer import Word2VecTokenizer
 from utils import MODEL_FILE
 
-embed_dim = 256
-margin = 0.3
+embed_dim = 300
+margin = 0.5
 learning_rate = 5e-5
 batch_size = 512
 epochs = 15
@@ -30,6 +31,24 @@ class TripletDataLoader(DataLoader):
         )
 
 
+def analyze_embedding_diversity(embeddings, name):
+    """Check if embeddings are collapsing to similar values"""
+    # Calculate pairwise similarities between embeddings
+    embeddings_norm = F.normalize(embeddings, p=2, dim=1)
+    similarities = torch.mm(embeddings_norm, embeddings_norm.t())
+
+    # Remove diagonal (self-similarities)
+    similarities.fill_diagonal_(0)
+
+    mean_sim = similarities.mean().item()
+    std_sim = similarities.std().item()
+
+    logging.info(
+        f"{name} - Mean inter-embedding similarity: {mean_sim:.4f}, Std: {std_sim:.4f}"
+    )
+    return mean_sim, std_sim
+
+
 def validate_model(query_tower, doc_tower, validation_dataloader, device):
     query_tower.eval()
     doc_tower.eval()
@@ -46,7 +65,7 @@ def validate_model(query_tower, doc_tower, validation_dataloader, device):
     total_queries = 0
 
     with torch.no_grad():  # Important: no gradients during validation
-        for batch in validation_dataloader:
+        for i, batch in tqdm(enumerate(validation_dataloader), desc="Validation"):
             query, positive, negative = [b.to(device) for b in batch.values()]
 
             # Forward pass (same as training)
@@ -54,6 +73,27 @@ def validate_model(query_tower, doc_tower, validation_dataloader, device):
             pos = doc_tower(positive)
             neg = doc_tower(negative)
 
+            if i == 0:  # Only for first batch
+                analyze_embedding_diversity(q, "Query embeddings")
+                analyze_embedding_diversity(pos, "Positive doc embeddings")
+                analyze_embedding_diversity(neg, "Negative doc embeddings")
+                # Check if embeddings are too similar to each other
+                q_mean = q.mean(dim=0)
+                pos_mean = pos.mean(dim=0)
+                neg_mean = neg.mean(dim=0)
+
+                logging.info(
+                    f"Embedding means - Query: {q_mean.norm():.4f}, Pos: {pos_mean.norm():.4f}, Neg: {neg_mean.norm():.4f}"
+                )
+
+                # Check variance across dimensions
+                q_var = q.var(dim=0).mean()
+                pos_var = pos.var(dim=0).mean()
+                neg_var = neg.var(dim=0).mean()
+
+                logging.info(
+                    f"Embedding variance - Query: {q_var:.4f}, Pos: {pos_var:.4f}, Neg: {neg_var:.4f}"
+                )
             # Calculate loss (same as training)
             dst_pos = F.cosine_similarity(q, pos)
             dst_neg = F.cosine_similarity(q, neg)
@@ -96,11 +136,17 @@ def validate_model(query_tower, doc_tower, validation_dataloader, device):
 def main():
     utils.setup_logging()
     device = utils.get_device()
-    tokenizer = utils.get_tokenizer()
+    tokenizer = Word2VecTokenizer()
     vocab_size = tokenizer.vocab_size
-    query_tower = Tower(vocab_size, embed_dim, dropout_rate).to(device)
-    doc_tower = Tower(vocab_size, embed_dim, dropout_rate).to(device)
-
+    logging.info(f"Vocab size: {vocab_size}")
+    query_tower = QueryTower(tokenizer.embeddings, embed_dim, dropout_rate).to(device)
+    doc_tower = DocTower(tokenizer.embeddings, embed_dim, dropout_rate).to(device)
+    logging.info(
+        f"Query embeddings require grad: {query_tower.embedding.weight.requires_grad}"
+    )
+    logging.info(
+        f"Doc embeddings require grad: {doc_tower.embedding.weight.requires_grad}"
+    )
     logging.info("Loading datasets")
     datasets = torch.load(DATASET_FILE, weights_only=False)
     train_dataset = datasets["train_triplets"]
@@ -139,11 +185,6 @@ def main():
             all_train_margins.extend(margins.tolist())
             torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
 
-            if (i + 1) % 50 == 0:  # Every 50 batches
-                logging.info(
-                    f"Batch {i}: Train Pos Sim: {dst_pos.mean():.4f}, Neg Sim: {dst_neg.mean():.4f}, Margin: {(dst_pos - dst_neg).mean():.4f}"
-                )
-
             optimizer.zero_grad()
             loss = torch.max(zero, margin - dst_pos + dst_neg).mean()
             loss.backward()
@@ -156,9 +197,6 @@ def main():
             num_train_batches += 1
 
         margins_tensor = torch.tensor(all_train_margins)
-        logging.info(
-            f"Train Margins - Avg: {margins_tensor.mean():.4f}, Min: {margins_tensor.min():.4f}, Max: {margins_tensor.max():.4f}"
-        )
 
         avg_train_loss = total_train_loss / num_train_batches
         avg_val_loss, retrieval_acc = validate_model(
@@ -167,6 +205,11 @@ def main():
         scheduler.step(avg_val_loss)
 
         logging.info(f"Epoch {epoch + 1}/{epochs}")
+        current_lr = optimizer.param_groups[0]["lr"]
+        logging.info(f"Current learning rate: {current_lr:.6f}")
+        logging.info(
+            f"Train Margins - Avg: {margins_tensor.mean():.4f}, Min: {margins_tensor.min():.4f}, Max: {margins_tensor.max():.4f}"
+        )
         logging.info(f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
         logging.info(f"Val Retrieval Accuracy: {retrieval_acc:.4f}")
 

@@ -32,9 +32,9 @@ class TripletDataset(Dataset):
                 logging.error(f"Selected and negative items are the same: {row}")
                 raise Exception("Selected and negative items are the same")
             if query not in query_groups:
-                query_groups[query] = {"pos": [], "neg": []}
-            query_groups[query]["pos"].append(passage_texts[selected_item])
-            query_groups[query]["neg"].append(passage_texts[negative_item])
+                query_groups[query] = {}
+            query_groups[query]["pos"] = passage_texts[selected_item]
+            query_groups[query]["neg"] = passage_texts[negative_item]
 
         # Create (query, positive_passage, negative_passage) triplets
         for query, pair in query_groups.items():
@@ -48,6 +48,8 @@ class TripletDataset(Dataset):
                 )
 
     def tokenize(self, text):
+        if isinstance(text, list):
+            text = " ".join(text)
         return self.tokenizer(
             text,
             return_tensors="pt",
