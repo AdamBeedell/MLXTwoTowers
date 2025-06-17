@@ -13,7 +13,8 @@ from utils import MODEL_FILE
 
 embed_dim = 300
 margin = 0.5
-learning_rate = 5e-5
+query_learning_rate = 2e-5
+doc_learning_rate = 1e-5
 batch_size = 512
 epochs = 15
 dropout_rate = 0.1
@@ -158,8 +159,11 @@ def main():
     training_dataloader = TripletDataLoader(train_dataset, device)
     validation_dataloader = TripletDataLoader(validation_dataset, device)
     test_dataloader = TripletDataLoader(test_dataset, device)
-    params = list(query_tower.parameters()) + list(doc_tower.parameters())
-    optimizer = optim.Adam(params, lr=learning_rate)
+    params = [
+        {"params": query_tower.parameters(), "lr": query_learning_rate},
+        {"params": doc_tower.parameters(), "lr": doc_learning_rate},
+    ]
+    optimizer = optim.Adam(params)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", patience=2, factor=0.5
     )
@@ -183,30 +187,31 @@ def main():
 
             margins = (dst_pos - dst_neg).detach().cpu()
             all_train_margins.extend(margins.tolist())
-            torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
+
+            all_params = []
+            for group in optimizer.param_groups:
+                all_params.extend(group["params"])
+            total_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+            if i % 100 == 1:
+                logging.info(f"Grad norm: {total_norm:.4f}")
 
             optimizer.zero_grad()
             loss = torch.max(zero, margin - dst_pos + dst_neg).mean()
             loss.backward()
-            total_norm = 0
-            for p in params:
-                if p.grad is not None:
-                    total_norm += p.grad.data.norm(2).item() ** 2
             optimizer.step()
             total_train_loss += loss.item()
             num_train_batches += 1
 
+        logging.info(f"Epoch {epoch + 1}/{epochs}")
         margins_tensor = torch.tensor(all_train_margins)
-
         avg_train_loss = total_train_loss / num_train_batches
         avg_val_loss, retrieval_acc = validate_model(
             query_tower, doc_tower, validation_dataloader, device
         )
         scheduler.step(avg_val_loss)
 
-        logging.info(f"Epoch {epoch + 1}/{epochs}")
-        current_lr = optimizer.param_groups[0]["lr"]
-        logging.info(f"Current learning rate: {current_lr:.6f}")
+        logging.info(f"Query learning rate: {optimizer.param_groups[0]["lr"]:.6f}")
+        logging.info(f"Doc learning rate: {optimizer.param_groups[1]["lr"]:.6f}")
         logging.info(
             f"Train Margins - Avg: {margins_tensor.mean():.4f}, Min: {margins_tensor.min():.4f}, Max: {margins_tensor.max():.4f}"
         )
