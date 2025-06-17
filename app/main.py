@@ -1,4 +1,5 @@
 import json
+import logging
 from contextlib import asynccontextmanager
 import os
 import numpy as np
@@ -31,9 +32,9 @@ redis_client = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global query_tower, tokenizer, device, redis_client
-
+    utils.setup_logging()
     device = utils.get_device()
-    checkpoint = torch.load(utils.outfile, map_location=device)
+    checkpoint = torch.load(utils.MODEL_FILE, map_location=device)
 
     query_tower = Tower(
         vocab_size=checkpoint["vocab_size"],
@@ -113,6 +114,10 @@ def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
         .dialect(2)
     )
 
+    logging.info(
+        "Query embedding norm:",
+        np.linalg.norm(np.frombuffer(query_embedding, dtype=np.float32)),
+    )
     results = redis_client.ft("doc_index").search(
         query_obj, query_params={"vec_param": query_embedding}
     )
