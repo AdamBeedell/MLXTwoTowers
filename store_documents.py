@@ -107,38 +107,24 @@ def encode_all_documents(tokenizer, doc_tower, documents, device, batch_size=100
 def store_embeddings_in_redis(doc_metadata, embeddings, redis_client):
     """Store document embeddings in Redis"""
 
-    redis_client.delete("doc_embeddings")
-    redis_client.delete("doc_metadata")
-    # Delete previous doc:* keys if any
-    for key in redis_client.scan_iter("doc:*"):
-        redis_client.delete(key)
-
+    redis_client.flushdb()
+    pipeline = redis_client.pipeline(transaction=False)
     for doc_meta, embedding in tqdm(
         zip(doc_metadata, embeddings), desc="Storing in Redis"
     ):
         # Store embedding as binary data
         embedding_bytes = embedding.astype(np.float32).tobytes()
         doc_id = doc_meta["id"]
-        redis_client.hset(
+        pipeline.hset(
             f"doc:{doc_id}",
             mapping={"text": doc_meta["text"], "embedding": embedding_bytes},
         )
 
+        if len(pipeline.command_stack) >= 1000:
+            pipeline.execute()
+    pipeline.execute()
+
     logging.info(f"Stored {len(doc_metadata)} document embeddings in Redis")
-    # Create some indexes for faster retrieval
-    splits = {}
-    for doc_meta in doc_metadata:
-        split = doc_meta["split"]
-        if split not in splits:
-            splits[split] = 0
-        splits[split] += 1
-
-    for split, count in splits.items():
-        redis_client.set(f"split_count_{split}", count)
-
-    logging.info("Corpus breakdown:")
-    for split, count in splits.items():
-        logging.info(f"  {split}: {count:,} documents")
 
 
 def create_redis_index(redis_client, dim):
