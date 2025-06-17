@@ -1,5 +1,6 @@
 import logging
 import torch
+MODEL_FILE = "data/models.pth"
 
 
 def setup_logging():
@@ -17,4 +18,3 @@ def get_device():
         return torch.device("cpu")
 
 
-outfile = "data/models.pth"

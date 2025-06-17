@@ -152,7 +152,7 @@ def main():
     utils.setup_logging()
     device = utils.get_device()
     redis_client = redis.Redis(host="localhost", port=6379, db=0)
-    checkpoint = torch.load(utils.outfile, map_location=device)
+    checkpoint = torch.load(utils.MODEL_FILE, map_location=device)
     doc_tower = Tower(
         vocab_size=checkpoint["vocab_size"],
         embed_dim=checkpoint["embed_dim"],

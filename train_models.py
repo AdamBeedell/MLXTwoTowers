@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 
 from dataset import DATASET_FILE
 from model import Tower
-from utils import outfile
+from utils import MODEL_FILE
 
 embed_dim = 256
 margin = 0.1
@@ -140,7 +140,6 @@ def main():
             for p in params:
                 if p.grad is not None:
                     total_norm += p.grad.data.norm(2).item() ** 2
-            total_norm = total_norm**0.5
             optimizer.step()
             total_train_loss += loss.item()
             num_train_batches += 1
@@ -170,9 +169,9 @@ def main():
                     "embed_dim": embed_dim,
                     "dropout_rate": dropout_rate,
                 },
-                outfile,
+                MODEL_FILE,
             )
-    checkpoint = torch.load(outfile)
+    checkpoint = torch.load(MODEL_FILE)
     query_tower.load_state_dict(checkpoint["query_tower"])
     doc_tower.load_state_dict(checkpoint["doc_tower"])
     test_loss = validate_model(query_tower, doc_tower, test_dataloader, device)
