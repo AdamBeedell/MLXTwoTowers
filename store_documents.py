@@ -10,7 +10,8 @@ from tqdm import tqdm
 import torch
 
 import utils
-from model import Tower
+from model import DocTower
+from tokenizer import Word2VecTokenizer
 
 
 def load_document_corpus():
@@ -152,8 +153,9 @@ def main():
     device = utils.get_device()
     redis_client = redis.Redis(host="localhost", port=6379, db=0)
     checkpoint = torch.load(utils.MODEL_FILE, map_location=device)
-    doc_tower = Tower(
-        vocab_size=checkpoint["vocab_size"],
+    tokenizer = Word2VecTokenizer()
+    doc_tower = DocTower(
+        embeddings=tokenizer.embeddings,
         embed_dim=checkpoint["embed_dim"],
         dropout_rate=checkpoint["dropout_rate"],
     ).to(device)
@@ -163,7 +165,6 @@ def main():
     documents = load_document_corpus()
 
     logging.info("Encoding documents...")
-    tokenizer = utils.get_embeddings()
     doc_metadata, embeddings = encode_all_documents(
         tokenizer, doc_tower, documents, device
     )

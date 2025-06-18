@@ -6,9 +6,11 @@ import numpy as np
 import redis
 import torch
 from fastapi import FastAPI
-from model import Tower
+from model import QueryTower
 import utils
 from redis.commands.search.query import Query
+
+from tokenizer import Word2VecTokenizer
 
 # Write the model version here or find some way to derive it from the model
 # eg. from the model files name
@@ -33,15 +35,15 @@ async def lifespan(app: FastAPI):
     global query_tower, tokenizer, device, redis_client
     utils.setup_logging()
     device = utils.get_device()
+    tokenizer = Word2VecTokenizer()
     checkpoint = torch.load(utils.MODEL_FILE, map_location=device)
 
-    query_tower = Tower(
-        vocab_size=checkpoint["vocab_size"],
+    query_tower = QueryTower(
+        tokenizer.embeddings,
         embed_dim=checkpoint["embed_dim"],
         dropout_rate=checkpoint["dropout_rate"],
     ).to(device)
     query_tower.load_state_dict(checkpoint["query_tower"])
-    tokenizer = utils.get_embeddings()
     redis_client = redis.Redis(host="redis-stack", port=6379, db=0)
     yield
 
@@ -78,11 +80,10 @@ def search(query):
     latency = (end_time - start_time) * 1000
 
     message = {
-        "Latency": latency,
+        "Latency": int(latency),
         "Version": model_version,
-        "Timestamp": end_time,
         "Input": query,
-        "Documents": documents,
+        "Document": documents[0][:50],
     }
 
     log_request(log_path, json.dumps(message))
@@ -114,8 +115,7 @@ def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
     )
 
     logging.info(
-        "Query embedding norm:",
-        np.linalg.norm(np.frombuffer(query_embedding, dtype=np.float32)),
+        f"Query embedding norm: {np.linalg.norm(np.frombuffer(query_embedding, dtype=np.float32)):.8f}",
     )
     results = redis_client.ft("doc_index").search(
         query_obj, query_params={"vec_param": query_embedding}
