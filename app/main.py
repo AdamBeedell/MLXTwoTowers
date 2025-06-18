@@ -1,5 +1,6 @@
 import json
 import logging
+import struct
 from contextlib import asynccontextmanager
 import os
 import numpy as np
@@ -101,12 +102,25 @@ def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
             max_length=128,
         )["input_ids"].to(device)
 
-        query_embedding = query_tower(tokenized_query).cpu().numpy().astype(np.float32)
+        query_embedding = (
+            query_tower(tokenized_query).cpu().numpy().astype(np.float32).flatten()
+        )
+        logging.info(
+            f"Query embedding norm: {np.linalg.norm(query_embedding):.8f}",
+        )
         # Ensure the vector is normalized (Redis cosine similarity expects this)
         query_embedding = query_embedding / np.linalg.norm(query_embedding)
 
         # Convert to bytes for Redis
-        query_embedding_bytes = query_embedding.tobytes()
+        query_embedding_bytes = struct.pack(
+            f"<{len(query_embedding)}f", *query_embedding
+        )
+
+        # --- START DEBUG CODE ---
+        # Save the numpy array to a file for external verification
+        np.save("debug_query_vector.npy", query_embedding)
+        logging.info("DEBUG: Saved query vector to debug_query_vector.npy")
+        # --- END DEBUG CODE ---
 
     redis_query = f"*=>[KNN {top_k} @embedding $vec_param AS vector_score]"
     query_obj = (
@@ -117,9 +131,6 @@ def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
         .dialect(2)
     )
 
-    logging.info(
-        f"Query embedding norm: {np.linalg.norm(query_embedding):.8f}",
-    )
     results = redis_client.ft("doc_index").search(
         query_obj, query_params={"vec_param": query_embedding_bytes}
     )
@@ -138,6 +149,29 @@ def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
         logging.info(
             f"  {i + 1}. {doc_id} (similarity: {similarity:.6f}): {text[:50]}..."
         )
+
+    # --- START: FINAL DEBUG BLOCK ---
+    logging.info("--- RUNNING MANUAL VERIFICATION WITHIN APP ---")
+    # Manually check similarity against a known-good document from test_found_documents.py
+    known_good_doc_ids = ["doc:test_0_2", "doc:train_85584_1"]
+    for known_good_doc_id in known_good_doc_ids:
+        good_doc_bytes = redis_client.hget(known_good_doc_id, "embedding")
+
+        if good_doc_bytes:
+            good_doc_vec = np.frombuffer(good_doc_bytes, dtype=np.float32)
+
+            # 'query_embedding' is the normalized numpy array from earlier in this function
+            # We use .flatten() just to be 100% sure it's 1D for the dot product
+            manual_similarity = np.dot(query_embedding.flatten(), good_doc_vec)
+
+            logging.info(
+                f"MANUAL SIMILARITY CHECK with '{known_good_doc_id}': {manual_similarity:.6f}"
+            )
+        else:
+            logging.info(
+                f"Could not find known-good doc '{known_good_doc_id}' for manual check."
+            )
+        # --- END: FINAL DEBUG BLOCK ---
 
     return search_results
 
