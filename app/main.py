@@ -101,27 +101,45 @@ def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
             max_length=128,
         )["input_ids"].to(device)
 
-        query_embedding = (
-            query_tower(tokenized_query).cpu().numpy().astype(np.float32).tobytes()
-        )
+        query_embedding = query_tower(tokenized_query).cpu().numpy().astype(np.float32)
+        # Ensure the vector is normalized (Redis cosine similarity expects this)
+        query_embedding = query_embedding / np.linalg.norm(query_embedding)
 
-    redis_query = f"*=>[KNN {top_k} @embedding $vec_param]"
+        # Convert to bytes for Redis
+        query_embedding_bytes = query_embedding.tobytes()
+
+    redis_query = f"*=>[KNN {top_k} @embedding $vec_param AS vector_score]"
     query_obj = (
         Query(redis_query)
-        .return_fields("text", "embedding", "text")
-        .with_scores()
+        .return_fields("text", "vector_score")
+        .sort_by("vector_score", asc=False)
         .paging(0, top_k)
         .dialect(2)
     )
 
     logging.info(
-        f"Query embedding norm: {np.linalg.norm(np.frombuffer(query_embedding, dtype=np.float32)):.8f}",
+        f"Query embedding norm: {np.linalg.norm(query_embedding):.8f}",
     )
     results = redis_client.ft("doc_index").search(
-        query_obj, query_params={"vec_param": query_embedding}
+        query_obj, query_params={"vec_param": query_embedding_bytes}
     )
 
-    return [(doc.id, float(doc.score), doc.text) for doc in results.docs]
+    # Return results with proper similarity scores
+    search_results = []
+    for doc in results.docs:
+        doc_id = doc.id
+        distance = float(doc.vector_score)
+        similarity = 1.0 - distance  # Convert distance to similarity
+        text = doc.text
+        search_results.append((doc_id, similarity, text))
+
+    logging.info(f"Found {len(search_results)} results:")
+    for i, (doc_id, similarity, text) in enumerate(search_results):
+        logging.info(
+            f"  {i + 1}. {doc_id} (similarity: {similarity:.6f}): {text[:50]}..."
+        )
+
+    return search_results
 
 
 ##### Log The Request #####
