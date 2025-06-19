@@ -16,13 +16,13 @@ from utils import MODEL_FILE
 
 hyperparameters = {
     "embed_dim": 300,
-    "margin": 0.5,
+    "margin": 0.3,
     "query_learning_rate": 2e-5,
     "doc_learning_rate": 1e-5,
-    "batch_size": 512,
+    "batch_size": 256,
     "epochs": 50,
     "dropout_rate": 0.1,
-    "patience": 3,
+    "patience": 5,
 }
 
 
@@ -232,7 +232,7 @@ def main():
         optimizer, mode="min", patience=2, factor=0.5
     )
     zero = torch.tensor(0.0).to(device)
-    best_retrieval_acc = float("inf")
+    best_val_loss = float("inf")
     patience_counter = 0
     last_epoch = 0
     for epoch in range(hyperparameters["epochs"]):
@@ -288,8 +288,8 @@ def main():
             step=epoch,
         )
         last_epoch += 1
-        if retrieval_acc < best_retrieval_acc:
-            best_retrieval_acc = retrieval_acc
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
             patience_counter = 0
             torch.save(
                 {
