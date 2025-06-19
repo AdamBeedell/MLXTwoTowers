@@ -70,13 +70,7 @@ def encode_all_documents(tokenizer, doc_tower, documents, device, batch_size=100
             batch_texts = [doc["text"] for doc in batch_docs]
 
             # Tokenize batch
-            tokenized = tokenizer(
-                batch_texts,
-                return_tensors="pt",
-                padding="max_length",
-                truncation=True,
-                max_length=128,
-            )["input_ids"].to(device)
+            tokenized = tokenizer(batch_texts)["input_ids"].to(device)
 
             # Encode
             embeddings = doc_tower(tokenized)

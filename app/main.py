@@ -94,13 +94,7 @@ def search(query):
 def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
     query_tower.eval()
     with torch.no_grad():
-        tokenized_query = tokenizer(
-            query,
-            return_tensors="pt",
-            padding="max_length",
-            truncation=True,
-            max_length=128,
-        )["input_ids"].to(device)
+        tokenized_query = tokenizer(query)["input_ids"].to(device)
 
         query_embedding = (
             query_tower(tokenized_query).cpu().numpy().astype(np.float32).flatten()
@@ -126,7 +120,7 @@ def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
     query_obj = (
         Query(redis_query)
         .return_fields("text", "vector_score")
-        .sort_by("vector_score", asc=False)
+        .sort_by("vector_score")
         .paging(0, top_k)
         .dialect(2)
     )
@@ -146,14 +140,12 @@ def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
 
     logging.info(f"Found {len(search_results)} results:")
     for i, (doc_id, similarity, text) in enumerate(search_results):
-        logging.info(
-            f"  {i + 1}. {doc_id} (similarity: {similarity:.6f}): {text[:50]}..."
-        )
+        logging.info(f"  {i + 1}. {doc_id} (similarity: {similarity:.6f}): {text}...")
 
     # --- START: FINAL DEBUG BLOCK ---
     logging.info("--- RUNNING MANUAL VERIFICATION WITHIN APP ---")
     # Manually check similarity against a known-good document from test_found_documents.py
-    known_good_doc_ids = ["doc:test_0_2", "doc:train_85584_1"]
+    known_good_doc_ids = ["doc:test_0_2", results.docs[0].id]
     for known_good_doc_id in known_good_doc_ids:
         good_doc_bytes = redis_client.hget(known_good_doc_id, "embedding")
 

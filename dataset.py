@@ -69,13 +69,7 @@ class TripletDataset(Dataset):
     def tokenize(self, text):
         if isinstance(text, list):
             text = " ".join(text)
-        return self.tokenizer(
-            text,
-            return_tensors="pt",
-            padding="max_length",
-            truncation=True,
-            max_length=128,
-        )["input_ids"].squeeze(0)
+        return self.tokenizer(text)["input_ids"].squeeze(0)
 
     def __getitem__(self, idx):
         return self.triplets[idx]
