@@ -35,34 +35,17 @@ class Word2VecTokenizer:
         self.pad_token = "<PAD>"
 
     def embed(self, text):
-        words = text.split()
-        indices = [
-            self.word_to_ix.get(word, self.word_to_ix.get(self.unk_token, 1))
-            for word in words
-        ]
-        vectors = [
-            (
-                self.embeddings[idx].detach().cpu().numpy()
-                if hasattr(self.embeddings[idx], "detach")
-                else self.embeddings[idx]
-            )
-            for idx in indices
-        ]
-        if not vectors:
-            # fallback to UNK embedding
-            unk_idx = self.word_to_ix.get(self.unk_token, 1)
-            return (
-                self.embeddings[unk_idx].detach().cpu().numpy()
-                if hasattr(self.embeddings[unk_idx], "detach")
-                else self.embeddings[unk_idx]
-            )
-        return np.mean(vectors, axis=0)
+        # Tokenize exactly like training/inference
+        ids = self.__call__(text)["input_ids"].squeeze(0)
+        # Convert ids → embeddings, mean-pool (on CPU, fine for mining)
+        vecs = self.embeddings[ids].detach().cpu().numpy()
+        return vecs.mean(axis=0)
 
     # tokenize() calls this
     def __call__(
         self,
         texts,
-        max_length=128,
+        max_length=512,
         padding="max_length",
         truncation=True,
         return_tensors="pt",
