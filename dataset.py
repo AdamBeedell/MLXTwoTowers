@@ -1,5 +1,6 @@
 import numpy as np
 from torch.utils.data import Dataset
+from tqdm import tqdm
 
 DATASET_FILE = "data/datasets.pt"
 
@@ -11,6 +12,8 @@ def cosine_similarity(vec1, vec2):
 
 
 class TripletDataset(Dataset):
+    embed_cache = {}
+
     def __init__(self, ms_marco_data, tokenizer, device):
         self.triplets = []
         self.tokenizer = tokenizer
@@ -18,7 +21,7 @@ class TripletDataset(Dataset):
 
         # Group by query to create triplets
         query_groups = {}
-        for row in ms_marco_data:
+        for row in tqdm(ms_marco_data):
             query = row["query"]
             passages = row["passages"]
             passage_texts = passages["passage_text"]
@@ -32,10 +35,10 @@ class TripletDataset(Dataset):
             best_neg = None
             for i in indices_ones:
                 pos = passage_texts[i]
-                vec_i = tokenizer.embed(pos)
+                vec_i = self.embed(pos)
                 for j in indices_zeros:
                     neg = passage_texts[j]
-                    vec_j = tokenizer.embed(neg)
+                    vec_j = self.embed(neg)
                     similarity = cosine_similarity(vec_i, vec_j)
                     if similarity > best_similarity:
                         best_similarity = similarity
@@ -55,6 +58,13 @@ class TripletDataset(Dataset):
                         "negative": self.tokenize(pair["neg"]),
                     }
                 )
+
+    def embed(self, text):
+        if text in self.embed_cache:
+            return TripletDataset.embed_cache[text]
+        embed = self.tokenizer.embed(text)
+        TripletDataset.embed_cache[text] = embed
+        return embed
 
     def tokenize(self, text):
         if isinstance(text, list):
