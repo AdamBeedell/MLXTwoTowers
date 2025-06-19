@@ -91,9 +91,8 @@ class SkipGramNegativeSampling(nn.Module):
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
 
-        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        self.in_embed = nn.Embedding(vocab_size, embed_dim, dtype=dtype)
-        self.out_embed = nn.Embedding(vocab_size, embed_dim, dtype=dtype)
+        self.in_embed = nn.Embedding(vocab_size, embed_dim)
+        self.out_embed = nn.Embedding(vocab_size, embed_dim)
         self.in_embed = nn.Embedding(vocab_size, embed_dim)
         self.out_embed = nn.Embedding(vocab_size, embed_dim)
 
@@ -167,7 +166,6 @@ def main():
 
     model = SkipGramNegativeSampling(vocab_size).to(device)
     if device.type == "cuda":
-        model = model.half()
         torch.backends.cudnn.benchmark = True
     optimizer = optim.Adam(model.parameters(), lr=hyperparameters["learning_rate"])
 
