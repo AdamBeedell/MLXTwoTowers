@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import wandb
 import pickle
 from torch.utils.data import DataLoader, Dataset
@@ -138,3 +139,26 @@ if __name__ == "__main__":
     wandb.finish()
 
 
+def infer(model, query_input_ids, doc_input_ids, device):
+    model.eval()
+    with torch.no_grad():
+        query_tensor = torch.tensor(query_input_ids).unsqueeze(0).to(device)  # [1, seq_len]
+        doc_tensor = torch.tensor(doc_input_ids).unsqueeze(0).to(device)      # [1, seq_len]
+
+        query_emb = model.get_query_embedding(query_tensor)  # [1, seq_len, embed_dim]
+        doc_emb = model.get_doc_embedding(doc_tensor)        # [1, seq_len, embed_dim]
+
+        # Average pooling over sequence length
+        query_vec = query_emb.mean(dim=1)  # [1, embed_dim]
+        doc_vec = doc_emb.mean(dim=1)      # [1, embed_dim]
+
+        score = F.cosine_similarity(query_vec, doc_vec)  # [1]
+
+    return score.item()
+
+#### define query_ids, doc_ids
+
+#### here's where precomputing all the tokens fails to pay off
+
+score = infer(model, query_ids, doc_ids, device)
+print("Similarity:", score)
