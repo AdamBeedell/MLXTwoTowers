@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 WORD2VEC_FILE = "data/word2vec_skipgram.pth"
 
@@ -24,10 +25,40 @@ class Word2VecTokenizer:
                 new_idx = old_idx + 2
                 self.word_to_ix[word] = new_idx
                 self.ix_to_word[new_idx] = word
+            embedding_dim = self.embeddings.shape[1]  # Assuming [vocab_size, dim]
+            pad_vec = torch.zeros((1, embedding_dim))
+            unk_vec = torch.randn((1, embedding_dim))
+            self.embeddings = torch.cat([pad_vec, unk_vec, self.embeddings], dim=0)
+
         self.vocab_size = len(self.word_to_ix)
         self.unk_token = "<UNK>"
         self.pad_token = "<PAD>"
 
+    def embed(self, text):
+        words = text.split()
+        indices = [
+            self.word_to_ix.get(word, self.word_to_ix.get(self.unk_token, 1))
+            for word in words
+        ]
+        vectors = [
+            (
+                self.embeddings[idx].detach().cpu().numpy()
+                if hasattr(self.embeddings[idx], "detach")
+                else self.embeddings[idx]
+            )
+            for idx in indices
+        ]
+        if not vectors:
+            # fallback to UNK embedding
+            unk_idx = self.word_to_ix.get(self.unk_token, 1)
+            return (
+                self.embeddings[unk_idx].detach().cpu().numpy()
+                if hasattr(self.embeddings[unk_idx], "detach")
+                else self.embeddings[unk_idx]
+            )
+        return np.mean(vectors, axis=0)
+
+    # tokenize() calls this
     def __call__(
         self,
         texts,
