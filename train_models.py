@@ -2,6 +2,8 @@ import logging
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
+from torch import autocast
+
 import wandb
 from tqdm import tqdm
 import utils
@@ -26,12 +28,15 @@ hyperparameters = {
 
 class TripletDataLoader(DataLoader):
     def __init__(self, dataset, device):
+        num_workers = 8 if device.type == "cuda" else 0 if device.type == "mps" else 4
         super().__init__(
             dataset,
             batch_size=hyperparameters["batch_size"],
             shuffle=True,
             drop_last=True,
             pin_memory=(device.type == "cuda"),
+            num_workers=num_workers,
+            persistent_workers=(num_workers > 0),
         )
 
 
@@ -136,7 +141,8 @@ def validate_model(run, query_tower, doc_tower, validation_dataloader, epoch, de
             "validation_positive_margins_count": (np.array(all_margins) > 0).sum(),
             "validation_positive_margins_ratio": (np.array(all_margins) > 0).mean()
             * 100,
-        }
+        },
+        step=epoch,
     )
     recall_at_k = correct_at_k / total_queries if total_queries > 0 else 0.0
 
@@ -144,6 +150,28 @@ def validate_model(run, query_tower, doc_tower, validation_dataloader, epoch, de
     doc_tower.train()
 
     return total_loss / num_batches, recall_at_k
+
+
+def training_loop_core(
+    batch, query_tower, doc_tower, all_train_margins, optimizer, zero
+):
+    q = query_tower(batch["query"])
+    pos = doc_tower(batch["positive"])
+    neg = doc_tower(batch["negative"])
+
+    dst_pos = F.cosine_similarity(q, pos)
+    dst_neg = F.cosine_similarity(q, neg)
+
+    margins = (dst_pos - dst_neg).detach().cpu()
+    all_train_margins.extend(margins.tolist())
+
+    all_params = []
+    for group in optimizer.param_groups:
+        all_params.extend(group["params"])
+    total_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+
+    loss = torch.max(zero, hyperparameters["margin"] - dst_pos + dst_neg).mean()
+    return loss, total_norm
 
 
 def main():
@@ -189,6 +217,9 @@ def main():
     training_dataloader = TripletDataLoader(train_dataset, device)
     validation_dataloader = TripletDataLoader(validation_dataset, device)
     test_dataloader = TripletDataLoader(test_dataset, device)
+
+    scaler = torch.amp.GradScaler(device=device.type)
+
     params = [
         {
             "params": query_tower.parameters(),
@@ -200,7 +231,7 @@ def main():
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", patience=2, factor=0.5
     )
-    zero = torch.tensor(0.0)
+    zero = torch.tensor(0.0).to(device)
     best_val_loss = float("inf")
     patience_counter = 0
     last_epoch = 0
@@ -211,27 +242,26 @@ def main():
         for i, batch in enumerate(tqdm(training_dataloader, desc=f"Epoch {epoch + 1}")):
             batch = {k: v.to(device) for k, v in batch.items()}
 
-            q = query_tower(batch["query"])
-            pos = doc_tower(batch["positive"])
-            neg = doc_tower(batch["negative"])
-
-            dst_pos = F.cosine_similarity(q, pos)
-            dst_neg = F.cosine_similarity(q, neg)
-
-            margins = (dst_pos - dst_neg).detach().cpu()
-            all_train_margins.extend(margins.tolist())
-
-            all_params = []
-            for group in optimizer.param_groups:
-                all_params.extend(group["params"])
-            total_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
-            if i % 100 == 1:
-                run.log({"grad_norm": total_norm.item()})
-
             optimizer.zero_grad()
-            loss = torch.max(zero, hyperparameters["margin"] - dst_pos + dst_neg).mean()
-            loss.backward()
-            optimizer.step()
+            if device.type == "mps":
+                loss, total_norm = training_loop_core(
+                    batch, query_tower, doc_tower, all_train_margins, optimizer, zero
+                )
+                loss.backward()
+                optimizer.step()
+            else:
+                with autocast(device_type=device.type):
+                    loss, total_norm = training_loop_core(
+                        batch,
+                        query_tower,
+                        doc_tower,
+                        all_train_margins,
+                        optimizer,
+                        zero,
+                    )
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
             total_train_loss += loss.item()
             num_train_batches += 1
 
@@ -253,6 +283,7 @@ def main():
                 "train_loss": avg_train_loss,
                 "val_loss": avg_val_loss,
                 "val_retrieval_accuracy": retrieval_acc,
+                "grad_norm": total_norm.item(),
             },
             step=epoch,
         )
