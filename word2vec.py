@@ -12,13 +12,17 @@ import argparse
 from tqdm import tqdm
 import utils
 import random
+import wandb
 
-min_freq = 10
-context_size = 2
-embed_dim = 300
-epochs = 5
-learning_rate = 0.01
-patience = 10000
+hyperparameters = {
+    "min_freq": 10,
+    "context_size": 2,
+    "embed_dim": 300,
+    "epochs": 5,
+    "learning_rate": 0.01,
+    "patience": 10000,
+    "batch_size": 2048,
+}
 
 parser = argparse.ArgumentParser(
     description="Train skipgram word2vec model with negative sampling."
@@ -31,12 +35,10 @@ parser.add_argument(
     default="data/word2vec_skipgram.pth",
     help="Output file to save embeddings",
 )
-parser.add_argument("--batch_size", default=8192, type=int, help="Batch size")
 args = parser.parse_args()
 
 input_file = args.corpus
 outfile = args.model
-batch_size = args.batch_size
 utils.setup_logging()
 
 
@@ -57,6 +59,7 @@ class SkipGramDataset(Dataset):
 # === Build dataset ===
 def make_skipgram_dataset(indices):
     dataset = []
+    context_size = hyperparameters["context_size"]
     for i in range(context_size, len(indices) - context_size):
         center_word = indices[i]
         # Dynamic window - randomly choose smaller windows
@@ -84,8 +87,13 @@ def subsample_frequent_words(indices, word_counts, threshold=1e-3):
 class SkipGramNegativeSampling(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
+        embed_dim = hyperparameters["embed_dim"]
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
+
+        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        self.in_embed = nn.Embedding(vocab_size, embed_dim, dtype=dtype)
+        self.out_embed = nn.Embedding(vocab_size, embed_dim, dtype=dtype)
         self.in_embed = nn.Embedding(vocab_size, embed_dim)
         self.out_embed = nn.Embedding(vocab_size, embed_dim)
 
@@ -121,13 +129,24 @@ def main():
     device = utils.get_device()
     logging.info(f"Using device: {device}")
 
+    run = wandb.init(
+        # Set the wandb entity where your project will be logged (generally your team name).
+        entity="mlx-institute",
+        # Set the wandb project where this run will be logged.
+        project="Word2Vec",
+        # Track hyperparameters and run metadata.
+        config=hyperparameters,
+    )
+
     # === Load ===
     with open(input_file, "r", encoding="utf-8") as f:
         text = f.read().split()
 
     # === Build vocab ===
     counter = Counter(text)
-    vocab = {word for word, freq in counter.items() if freq >= min_freq}
+    vocab = {
+        word for word, freq in counter.items() if freq >= hyperparameters["min_freq"]
+    }
     word_to_ix = {word: i for i, word in enumerate(sorted(vocab))}
     ix_to_word = {i: word for word, i in word_to_ix.items()}
     vocab_size = len(word_to_ix)
@@ -147,18 +166,24 @@ def main():
     pin_memory = device.type == "cuda"
 
     model = SkipGramNegativeSampling(vocab_size).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    if device.type == "cuda":
+        model = model.half()
+        torch.backends.cudnn.benchmark = True
+    optimizer = optim.Adam(model.parameters(), lr=hyperparameters["learning_rate"])
 
+    num_workers = 8 if device.type == "cuda" else 0 if device.type == "mps" else 4
     data_loader = DataLoader(
         word2vec_dataset,
-        batch_size=batch_size,
+        batch_size=hyperparameters["batch_size"],
         shuffle=True,
         drop_last=True,
         pin_memory=pin_memory,
+        num_workers=num_workers,
+        persistent_workers=(num_workers > 0),
     )
+    scaler = torch.amp.GradScaler(device=device.type)
 
-    logging.info(f"Dataset size: {len(dataset)} batch_size {batch_size}")
-    start_time = time.time()
+    epochs = hyperparameters["epochs"]
     for epoch in range(epochs):
         pbar = tqdm(
             enumerate(data_loader),
@@ -168,6 +193,8 @@ def main():
             unit="batch",
         )
         total_samples = 0
+        epoch_loss = 0
+        start_time = time.time()
         for i, (center_batch, context_batch) in pbar:
             center_batch = center_batch.to(device, non_blocking=True)
             context_batch = context_batch.to(device, non_blocking=True)
@@ -176,12 +203,32 @@ def main():
             )
 
             optimizer.zero_grad()
-            loss = model(center_batch, context_batch, neg_samples)  # Swapped order
-
-            loss.backward()
-            optimizer.step()
+            if device.type == "mps":
+                loss = model(center_batch, context_batch, neg_samples)  # Swapped order
+                loss.backward()
+                total_grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), max_norm=1.0
+                )
+                optimizer.step()
+            else:
+                with torch.autocast(device_type=device.type):
+                    loss = model(center_batch, context_batch, neg_samples)
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                total_grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), max_norm=1.0
+                )
+                scaler.step(optimizer)
+                scaler.update()
 
             total_samples += len(center_batch)
+            if i % 100 == 0:
+                run.log(
+                    {
+                        "train_loss_batch": loss.item(),
+                        "grad_norm": total_grad_norm,
+                    }
+                )
             if i % 10 == 0:
                 pbar.set_postfix(
                     {
@@ -191,8 +238,12 @@ def main():
                 )
         pure_training_time = time.time() - start_time
         samples_per_sec = total_samples / pure_training_time
-        logging.info(
-            f"Total training time at batch size {batch_size}: {pure_training_time:.1f} samples/sec {samples_per_sec:.1f}"
+        run.log(
+            {
+                "train_loss_epoch": epoch_loss / total_samples,
+                "training_time": pure_training_time,
+                "samples_per_sec": samples_per_sec,
+            }
         )
         torch.save(
             {
@@ -203,6 +254,7 @@ def main():
             outfile,
         )
     logging.info(f"✅ Embeddings saved to {outfile}")
+    run.finish(0)
 
 
 if __name__ == "__main__":
