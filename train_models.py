@@ -74,6 +74,10 @@ def validate_model(run, query_tower, doc_tower, validation_dataloader, epoch, de
     pos_similarities = []
     neg_similarities = []
 
+    all_queries = []
+    all_positives = []
+    all_negatives = []
+
     correct_at_k = 0
     total_queries = 0
 
@@ -100,6 +104,10 @@ def validate_model(run, query_tower, doc_tower, validation_dataloader, epoch, de
                 q_var = q.var(dim=0).mean()
                 pos_var = pos.var(dim=0).mean()
                 neg_var = neg.var(dim=0).mean()
+
+                all_queries.extend(q.cpu())
+                all_positives.extend(pos.cpu())
+                all_negatives.extend(neg.cpu())
 
                 run.log(
                     {
@@ -130,6 +138,17 @@ def validate_model(run, query_tower, doc_tower, validation_dataloader, epoch, de
             total_loss += loss.item()
             num_batches += 1
 
+    # Calculate retrieval metrics
+    mrr_scores = []
+    for q, pos, neg in zip(all_queries, all_positives, all_negatives):
+        pos_sim = F.cosine_similarity(q.unsqueeze(0), pos.unsqueeze(0))
+        neg_sim = F.cosine_similarity(q.unsqueeze(0), neg.unsqueeze(0))
+
+        if pos_sim > neg_sim:
+            mrr_scores.append(1.0)  # Positive ranked first
+        else:
+            mrr_scores.append(0.0)  # Positive not ranked first
+
     run.log(
         {
             "validation_pos_similarities_mean": np.mean(pos_similarities),
@@ -141,6 +160,7 @@ def validate_model(run, query_tower, doc_tower, validation_dataloader, epoch, de
             "validation_positive_margins_count": (np.array(all_margins) > 0).sum(),
             "validation_positive_margins_ratio": (np.array(all_margins) > 0).mean()
             * 100,
+            "mean_mrr": np.mean(mrr_scores),
         },
         step=epoch,
     )
@@ -165,13 +185,8 @@ def training_loop_core(
     margins = (dst_pos - dst_neg).detach().cpu()
     all_train_margins.extend(margins.tolist())
 
-    all_params = []
-    for group in optimizer.param_groups:
-        all_params.extend(group["params"])
-    total_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
-
     loss = torch.max(zero, hyperparameters["margin"] - dst_pos + dst_neg).mean()
-    return loss, total_norm
+    return loss
 
 
 def main():
@@ -235,6 +250,8 @@ def main():
     best_val_loss = float("inf")
     patience_counter = 0
     last_epoch = 0
+    all_params = list(query_tower.parameters()) + list(doc_tower.parameters())
+    grad_norm = 0
     for epoch in range(hyperparameters["epochs"]):
         total_train_loss = 0.0
         num_train_batches = 0
@@ -244,14 +261,15 @@ def main():
 
             optimizer.zero_grad()
             if device.type == "mps":
-                loss, total_norm = training_loop_core(
+                loss = training_loop_core(
                     batch, query_tower, doc_tower, all_train_margins, optimizer, zero
                 )
                 loss.backward()
+                total_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
                 optimizer.step()
             else:
                 with autocast(device_type=device.type):
-                    loss, total_norm = training_loop_core(
+                    loss = training_loop_core(
                         batch,
                         query_tower,
                         doc_tower,
@@ -260,10 +278,13 @@ def main():
                         zero,
                     )
                 scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                total_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
                 scaler.step(optimizer)
                 scaler.update()
             total_train_loss += loss.item()
             num_train_batches += 1
+            grad_norm = total_norm.item()
 
         logging.info(f"Epoch {epoch + 1}/{hyperparameters["epochs"]}")
         margins_tensor = torch.tensor(all_train_margins)
@@ -283,7 +304,7 @@ def main():
                 "train_loss": avg_train_loss,
                 "val_loss": avg_val_loss,
                 "val_retrieval_accuracy": retrieval_acc,
-                "grad_norm": total_norm.item(),
+                "grad_norm": grad_norm,
             },
             step=epoch,
         )

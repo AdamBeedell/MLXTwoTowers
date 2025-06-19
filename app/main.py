@@ -102,8 +102,6 @@ def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
         logging.info(
             f"Query embedding norm: {np.linalg.norm(query_embedding):.8f}",
         )
-        # Ensure the vector is normalized (Redis cosine similarity expects this)
-        query_embedding = query_embedding / np.linalg.norm(query_embedding)
 
         # Convert to bytes for Redis
         query_embedding_bytes = struct.pack(
