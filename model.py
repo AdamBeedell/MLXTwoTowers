@@ -41,4 +41,4 @@ class DocTower(Tower):
 
     @classmethod
     def train_embeddings(cls):
-        return False
+        return True
