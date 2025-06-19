@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from model import QueryTower
 import utils
 from redis.commands.search.query import Query
+import random
 
 from tokenizer import Word2VecTokenizer
 
@@ -73,22 +74,52 @@ def search(query):
     global query_tower, redis_client, tokenizer, device
     if (query_tower is None) or (tokenizer is None) or (redis_client is None):
         raise Exception("App not initialized.")
-    start_time = os.times().elapsed  # Start time for latency calculation
-    documents = do_search(
-        query, query_tower, redis_client, tokenizer, device
-    )  # Placeholder for actual search
-    end_time = os.times().elapsed  # End time for latency calculation
+
+    start_time = os.times().elapsed
+
+    # Get search results
+    documents = do_search(query, query_tower, redis_client, tokenizer, device)
+
+    # Get ground truth
+    ground_truth_docs = get_ground_truth_docs(query)
+    ground_truth_similarities = calculate_ground_truth_similarity(
+        query, ground_truth_docs
+    )
+
+    end_time = os.times().elapsed
     latency = (end_time - start_time) * 1000
+
+    # Check if top result matches ground truth
+    has_match = False
+    if documents and ground_truth_docs:
+        top_doc_id = documents[0][0]
+        gt_doc_ids = [gt["doc_id"] for gt in ground_truth_docs]
+        has_match = any(gt_id in top_doc_id for gt_id in gt_doc_ids)
+
+    response = {
+        "documents": documents,
+        "ground_truth": ground_truth_similarities,
+        "query": query,
+        "latency": int(latency),
+        "version": model_version,
+        "evaluation": {
+            "has_ground_truth": len(ground_truth_docs) > 0,
+            "top_result_matches_gt": has_match,
+            "num_ground_truth_docs": len(ground_truth_docs),
+        },
+    }
 
     message = {
         "Latency": int(latency),
         "Version": model_version,
         "Input": query,
-        "Document": documents[0][:50],
+        "Document": documents[0][:50] if documents else None,
+        "HasGroundTruth": len(ground_truth_docs) > 0,
+        "MatchesGroundTruth": has_match,
     }
 
     log_request(log_path, json.dumps(message))
-    return {"documents": documents}
+    return response
 
 
 def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
@@ -164,6 +195,83 @@ def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
         # --- END: FINAL DEBUG BLOCK ---
 
     return search_results
+
+
+def get_ground_truth_docs(query):
+    """Get ground truth positive documents for a query"""
+    global redis_client
+    try:
+        positive_doc_ids = redis_client.smembers(f"query_positive:{query}")
+        positive_docs = []
+
+        for doc_id in positive_doc_ids:
+            doc_id_str = doc_id.decode("utf-8") if isinstance(doc_id, bytes) else doc_id
+            doc_data = redis_client.hmget(f"doc:{doc_id_str}", "text")
+            if doc_data[0]:
+                text = (
+                    doc_data[0].decode("utf-8")
+                    if isinstance(doc_data[0], bytes)
+                    else doc_data[0]
+                )
+                positive_docs.append(
+                    {
+                        "doc_id": doc_id_str,
+                        "text": text,
+                        "similarity": 1.0,  # Ground truth
+                    }
+                )
+
+        return positive_docs
+    except Exception as e:
+        logging.error(f"Error getting ground truth for query '{query}': {e}")
+        return []
+
+
+def calculate_ground_truth_similarity(query, ground_truth_docs):
+    global query_tower, tokenizer, device
+    """Calculate actual similarity between query and ground truth docs"""
+    if not ground_truth_docs:
+        return []
+
+    query_tower.eval()
+    with torch.no_grad():
+        # Get query embedding
+        tokenized_query = tokenizer(query)["input_ids"].to(device)
+        query_embedding = query_tower(tokenized_query).cpu().numpy().flatten()
+
+        # Calculate similarities to ground truth docs
+        results = []
+        for gt_doc in ground_truth_docs:
+            doc_id = gt_doc["doc_id"]
+            # Get document embedding from Redis
+            doc_embedding_bytes = redis_client.hget(f"doc:{doc_id}", "embedding")
+            if doc_embedding_bytes:
+                doc_embedding = np.frombuffer(doc_embedding_bytes, dtype=np.float32)
+                similarity = np.dot(query_embedding, doc_embedding)
+                results.append(
+                    {
+                        "doc_id": doc_id,
+                        "text": gt_doc["text"],
+                        "similarity": float(similarity),
+                    }
+                )
+
+        return results
+
+
+@app.get("/random_query")
+def get_random_query():
+    """Get a random query that has ground truth data"""
+    random.seed(42)
+    all_queries = redis_client.smembers("all_queries")
+    if not all_queries:
+        return {"error": "No queries found in database"}
+
+    # Convert bytes to strings and pick random
+    query_list = [q.decode("utf-8") if isinstance(q, bytes) else q for q in all_queries]
+    random_query = random.choice(query_list)
+
+    return search(random_query)
 
 
 ##### Log The Request #####
