@@ -14,6 +14,9 @@ from model import QueryTower, DocTower
 from tokenizer import Word2VecTokenizer
 from utils import MODEL_FILE
 
+# ------------- additional imports -------------
+import random
+
 hyperparameters = {
     "embed_dim": 300,
     "margin": 0.3,
@@ -39,6 +42,55 @@ class TripletDataLoader(DataLoader):
             num_workers=num_workers,
             persistent_workers=(num_workers > 0),
         )
+
+
+# -------------------- HARD NEGATIVE MINING UTILITY ---------------------
+def mine_hard_negatives(
+    dataset,
+    query_tower,
+    doc_tower,
+    tokenizer,
+    device,
+    pool_size=10000,
+    top_k=1,
+    batch_enc=512,
+):
+    """
+    For every query, pick the most similar *non‑positive* passage from a
+    sampled pool of other positives and use it as the new negative.
+    """
+    # ---- build candidate pool ------------------------------------------------
+    all_pos_texts = [t["positive_text"] for t in dataset.triplets]
+    if len(all_pos_texts) > pool_size:
+        all_pos_texts = random.sample(all_pos_texts, pool_size)
+
+    # encode pool once
+    doc_tower.eval()
+    cand_embs = []
+    with torch.no_grad():
+        for i in range(0, len(all_pos_texts), batch_enc):
+            toks = tokenizer(all_pos_texts[i : i + batch_enc])["input_ids"].to(device)
+            cand_embs.append(doc_tower(toks))
+    cand_embs = torch.cat(cand_embs, dim=0)  # [N,D]
+    cand_embs = F.normalize(cand_embs, p=2, dim=1)  # unit vectors
+
+    # ---- mine hardest for each query ----------------------------------------
+    query_tower.eval()
+    mapping = {}
+    with torch.no_grad():
+        for i in range(0, len(dataset.triplets), batch_enc):
+            sub = dataset.triplets[i : i + batch_enc]
+            q_texts = [t["query_text"] for t in sub]
+            toks = tokenizer(q_texts)["input_ids"].to(device)
+            q_embs = F.normalize(query_tower(toks), p=2, dim=1)  # [b,D]
+
+            sims = torch.matmul(q_embs, cand_embs.T)  # [b,N]
+            top_idx = sims.topk(top_k, dim=1).indices[:, 0]  # best idx
+            for j, idx in enumerate(top_idx):
+                mapping[q_texts[j]] = all_pos_texts[idx.item()]
+
+    # ---- apply --------------------------------------------------------------
+    dataset.replace_negatives(mapping)
 
 
 def analyze_embedding_diversity(run, embeddings, name, epoch):
@@ -236,7 +288,6 @@ def main():
     logging.info(
         f"Dataset sizes: training {len(train_dataset)} validation: {len(validation_dataset)} test: {len(test_dataset)}"
     )
-    training_dataloader = TripletDataLoader(train_dataset, device)
     validation_dataloader = TripletDataLoader(validation_dataset, device)
     test_dataloader = TripletDataLoader(test_dataset, device)
 
@@ -260,6 +311,16 @@ def main():
     all_params = list(query_tower.parameters()) + list(doc_tower.parameters())
     grad_norm = 0
     for epoch in range(hyperparameters["epochs"]):
+        # refresh dataloader (dataset may have grown new negatives last epoch)
+        training_dataloader = TripletDataLoader(train_dataset, device)
+
+        # mine hard negatives every 5 epochs (skip epoch 0)
+        if epoch > 0 and epoch % 5 == 0:
+            logging.info("🔍 Mining hard negatives with current model...")
+            mine_hard_negatives(
+                train_dataset, query_tower, doc_tower, tokenizer, device
+            )
+
         total_train_loss = 0.0
         num_train_batches = 0
         all_train_margins = []
@@ -288,7 +349,7 @@ def main():
             num_train_batches += 1
             grad_norm = total_norm.item()
 
-        logging.info(f"Epoch {epoch + 1}/{hyperparameters["epochs"]}")
+        logging.info(f"Epoch {epoch + 1}/{hyperparameters['epochs']}")
         margins_tensor = torch.tensor(all_train_margins)
         avg_train_loss = total_train_loss / num_train_batches
         avg_val_loss, retrieval_acc = validate_model(

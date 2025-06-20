@@ -53,9 +53,14 @@ class TripletDataset(Dataset):
             if len(pair["pos"]) > 0 and len(pair["neg"]) > 0:
                 self.triplets.append(
                     {
+                        # token id tensors --------------------------------
                         "query": self.tokenize(query),
                         "positive": self.tokenize(pair["pos"]),
                         "negative": self.tokenize(pair["neg"]),
+                        # raw texts ---------------------------------------
+                        "query_text": query,
+                        "positive_text": pair["pos"],
+                        "negative_text": pair["neg"],
                     }
                 )
 
@@ -80,3 +85,15 @@ class TripletDataset(Dataset):
     def __iter__(self):
         for i in range(len(self)):
             yield self[i]
+
+    def replace_negatives(self, query_to_new_neg):
+        """
+        Replace negative passages with mined hard negatives.
+        `query_to_new_neg`: dict  query_text -> new_negative_text
+        """
+        for trip in self.triplets:
+            qtxt = trip["query_text"]
+            if qtxt in query_to_new_neg:
+                new_neg_txt = query_to_new_neg[qtxt]
+                trip["negative_text"] = new_neg_txt
+                trip["negative"] = self.tokenize(new_neg_txt)
