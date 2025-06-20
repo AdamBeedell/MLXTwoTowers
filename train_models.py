@@ -81,8 +81,8 @@ def mine_hard_negatives(
     query_tower.eval()
     mapping = {}
     with torch.no_grad():
-        for i in range(0, len(dataset.triplets), batch_enc):
-            sub = dataset.triplets[i : i + batch_enc]
+        for i in range(0, len(triplets), batch_enc):
+            sub = triplets[i : i + batch_enc]
             q_texts = [t["query_text"] for t in sub]
             toks = tokenizer(q_texts)["input_ids"].to(device)
             q_embs = F.normalize(query_tower(toks), p=2, dim=1)  # [b,D]
@@ -302,9 +302,9 @@ def main():
     )
 
     datasets = torch.load(DATASET_FILE, weights_only=False)
-    train_dataset = datasets["train_triplets"]
-    validation_dataset = datasets["val_triplets"]
-    test_dataset = datasets["test_triplets"]
+    train_dataset = datasets["train"]
+    validation_dataset = datasets["validation"]
+    test_dataset = datasets["test"]
     logging.info(
         f"Dataset sizes: training {len(train_dataset)} validation: {len(validation_dataset)} test: {len(test_dataset)}"
     )

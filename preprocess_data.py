@@ -56,9 +56,9 @@ def main():
     logging.info("Saving preprocessed datasets...")
     torch.save(
         {
-            "train_triplets": train_dataset.triplets,
-            "val_triplets": validation_dataset.triplets,
-            "test_triplets": test_dataset.triplets,
+            "train": train_dataset,
+            "validation": validation_dataset,
+            "test": test_dataset,
             "tokenizer": tokenizer,
             "document_frequency": df,
             "num_passages": N,
