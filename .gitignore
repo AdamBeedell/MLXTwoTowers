@@ -5,6 +5,8 @@ uv.lock
 ms_marco_train.parquet
 wandb/
 eval_results.json
+key.pem
+data/
 
 *.orig
 *.rej
