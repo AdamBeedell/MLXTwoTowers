@@ -14,16 +14,11 @@ pip install -r requirements.txt
 mkdir data
 ssh -i <key-file> -p <computa-port> root@<computa-server>
 # on Computa server
-apt update
-apt install -y git build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev wget curl llvm libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev
-curl https://pyenv.run | bash
-<edit your .bashrc file as it says to>
-bash
-pyenv install 3.13.3
 git clone https://github.com/AdamBeedell/MLXTwoTowers.git
-cd MLXTwoTowers
-pip install -r requirements.txt
-mkdir data
+./setup_computa1.sh
+bash
+./setup_computa2.sh
+
 ```
 
 ### Running the core workflow

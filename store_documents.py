@@ -64,7 +64,9 @@ def load_document_corpus():
     # Convert to list
     documents = list(all_documents.values())
     logging.info(f"Loaded {len(documents)} unique documents from MS MARCO")
-    logging.info(f"Tracked {len(query_to_positive_docs)} unique queries")
+    logging.info(
+        f"Tracked {len(query_to_positive_docs)} positives, {len(query_to_all_docs)} total"
+    )
 
     return documents, query_to_positive_docs, query_to_all_docs
 
