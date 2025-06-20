@@ -236,23 +236,26 @@ def training_loop_core(batch, query_tower, doc_tower, all_train_margins):
     The logits matrix is [B  ×  2B].
     The correct class for query *i* is column *i*.
     """
-    q   = query_tower(batch["query"])      # [B,D]   L2‑normalised
-    pos = doc_tower(batch["positive"])     # [B,D]
-    neg = doc_tower(batch["negative"])     # [B,D]
+    q = query_tower(batch["query"])  # [B,D]   L2‑normalised
+    pos = doc_tower(batch["positive"])  # [B,D]
+    neg = doc_tower(batch["negative"])  # [B,D]
 
-    docs   = torch.cat([pos, neg], dim=0)              # [2B,D]
+    docs = torch.cat([pos, neg], dim=0)  # [2B,D]
     logits = torch.matmul(q, docs.T) / hyperparameters["temperature"]  # [B,2B]
-    labels = torch.arange(q.size(0), device=q.device)                 # [B]
+    labels = torch.arange(q.size(0), device=q.device)  # [B]
 
     # --- monitor margin (pos − best other) -----------------------------
     with torch.no_grad():
-        pos_scores = logits[torch.arange(q.size(0)), labels]           # diag
+        pos_scores = logits[torch.arange(q.size(0)), labels]  # diag
         # ignore the pos column when searching for hardest other
-        mask      = F.one_hot(labels, num_classes=logits.size(1)).bool()
-        hardest   = logits.masked_fill(mask, float("-inf")).max(dim=1).values
+        mask = F.one_hot(labels, num_classes=logits.size(1)).bool()
+        hardest = logits.masked_fill(mask, float("-inf")).max(dim=1).values
         all_train_margins.extend((pos_scores - hardest).cpu().tolist())
+        preds = logits.argmax(dim=1)
+        num_correct = (preds == labels).sum().item()
 
-    return F.cross_entropy(logits, labels)
+    loss = F.cross_entropy(logits, labels)
+    return loss, num_correct
 
 
 def main():
@@ -311,7 +314,6 @@ def main():
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", patience=2, factor=0.5
     )
-    zero = torch.tensor(0.0).to(device)
     best_val_loss = float("inf")
     patience_counter = 0
     last_epoch = 0
@@ -329,6 +331,7 @@ def main():
             )
 
         total_train_loss = 0.0
+        total_correct = 0
         num_train_batches = 0
         all_train_margins = []
         for i, batch in enumerate(tqdm(training_dataloader, desc=f"Epoch {epoch + 1}")):
@@ -336,7 +339,7 @@ def main():
 
             optimizer.zero_grad()
             if device.type == "mps":
-                loss = training_loop_core(
+                loss, correct = training_loop_core(
                     batch, query_tower, doc_tower, all_train_margins
                 )
                 loss.backward()
@@ -344,7 +347,7 @@ def main():
                 optimizer.step()
             else:
                 with autocast(device_type=device.type):
-                    loss = training_loop_core(
+                    loss, correct = training_loop_core(
                         batch, query_tower, doc_tower, all_train_margins
                     )
                 scaler.scale(loss).backward()
@@ -354,11 +357,15 @@ def main():
                 scaler.update()
             total_train_loss += loss.item()
             num_train_batches += 1
+            total_correct += correct
             grad_norm = total_norm.item()
 
         logging.info(f"Epoch {epoch + 1}/{hyperparameters['epochs']}")
         margins_tensor = torch.tensor(all_train_margins)
         avg_train_loss = total_train_loss / num_train_batches
+        train_top1_acc = total_correct / (
+            num_train_batches * hyperparameters["batch_size"]
+        )
         avg_val_loss, retrieval_acc = validate_model(
             run, query_tower, doc_tower, validation_dataloader, epoch, device
         )
@@ -375,6 +382,7 @@ def main():
                 "val_loss": avg_val_loss,
                 "val_retrieval_accuracy": retrieval_acc,
                 "grad_norm": grad_norm,
+                "train_top1_acc": train_top1_acc,
             },
             step=epoch,
         )
