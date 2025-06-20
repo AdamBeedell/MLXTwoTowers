@@ -15,10 +15,9 @@ mkdir data
 ssh -i <key-file> -p <computa-port> root@<computa-server>
 # on Computa server
 git clone https://github.com/AdamBeedell/MLXTwoTowers.git
-./setup_computa1.sh
-bash
-./setup_computa2.sh
-
+cd MLXTwoTowers
+pip install wandb tqdm
+mkdir data
 ```
 
 ### Running the core workflow
@@ -27,13 +26,13 @@ bash
 # On Computa server
 python word2vec.py
 # On your machine
-scp -i <key-file> -P <computa-port> root@216.249.100.66:MLXTwoTowers/data/word2vec_skipgram.pth data/
+scp -C -i <key-file> -P <computa-port> root@216.249.100.66:MLXTwoTowers/data/word2vec_skipgram.pth data/
 python preprocess_data.py 
-scp -i <key-file> -P <computa-port> data/datasets.pt root@216.249.100.66:MLXTwoTowers/data/
+scp -C -i <key-file> -P <computa-port> data/datasets.pt root@216.249.100.66:MLXTwoTowers/data/
 # On Computa server
 python train_models.py
 # On your machine
-scp -i <key-file> -P <computa-port> root@216.249.100.66:MLXTwoTowers/data/models.pth data/
+scp -C -i <key-file> -P <computa-port> root@216.249.100.66:MLXTwoTowers/data/models.pth data/
 docker compose up --build
 python store_documents.py
 ```
