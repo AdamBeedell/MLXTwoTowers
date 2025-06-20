@@ -2,7 +2,7 @@ import logging
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
-from torch import autocast
+from torch.cuda.amp import autocast, GradScaler
 
 import wandb
 from tqdm import tqdm
@@ -301,7 +301,7 @@ def main():
     validation_dataloader = TripletDataLoader(validation_dataset, device)
     test_dataloader = TripletDataLoader(test_dataset, device)
 
-    scaler = torch.amp.GradScaler(device=device.type)
+    scaler = GradScaler()
 
     params = [
         {
@@ -335,8 +335,9 @@ def main():
         num_train_batches = 0
         all_train_margins = []
         for i, batch in enumerate(tqdm(training_dataloader, desc=f"Epoch {epoch + 1}")):
-            batch = {k: v.to(device) for k, v in batch.items()}
-
+            batch = {
+                k: (v.to(device) if torch.is_tensor(v) else v) for k, v in batch.items()
+            }
             optimizer.zero_grad()
             if device.type == "mps":
                 loss, correct = training_loop_core(
@@ -346,7 +347,7 @@ def main():
                 total_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
                 optimizer.step()
             else:
-                with autocast(device_type=device.type):
+                with autocast():
                     loss, correct = training_loop_core(
                         batch, query_tower, doc_tower, all_train_margins
                     )
