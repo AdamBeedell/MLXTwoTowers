@@ -227,23 +227,30 @@ def validate_model(run, query_tower, doc_tower, validation_dataloader, epoch, de
 
 def training_loop_core(batch, query_tower, doc_tower, all_train_margins):
     """
-    Multi-negative contrastive loss:
-    every other positive in the batch serves as a negative.
+    Multi‑negative contrastive loss that **explicitly includes the mined
+    hard negative** for each query in addition to the in‑batch negatives.
+
+    For a batch of size B:
+      • docs[:B]   == positives aligned with queries
+      • docs[B:]   == per‑query hard negatives
+    The logits matrix is [B  ×  2B].
+    The correct class for query *i* is column *i*.
     """
-    q = query_tower(batch["query"])  # [B,D] normalised
-    pos = doc_tower(batch["positive"])  # [B,D]
+    q   = query_tower(batch["query"])      # [B,D]   L2‑normalised
+    pos = doc_tower(batch["positive"])     # [B,D]
+    neg = doc_tower(batch["negative"])     # [B,D]
 
-    logits = torch.matmul(q, pos.T) / hyperparameters["temperature"]  # [B,B]
-    labels = torch.arange(q.size(0), device=q.device)  # [B]
+    docs   = torch.cat([pos, neg], dim=0)              # [2B,D]
+    logits = torch.matmul(q, docs.T) / hyperparameters["temperature"]  # [B,2B]
+    labels = torch.arange(q.size(0), device=q.device)                 # [B]
 
-    # gather margins for monitoring (diag – best other)
+    # --- monitor margin (pos − best other) -----------------------------
     with torch.no_grad():
-        diag = logits.diag()
-        masked = logits.masked_fill(
-            torch.eye(q.size(0), device=q.device).bool(), float("-inf")
-        )
-        best_neg = masked.max(dim=1).values
-        all_train_margins.extend((diag - best_neg).cpu().tolist())
+        pos_scores = logits[torch.arange(q.size(0)), labels]           # diag
+        # ignore the pos column when searching for hardest other
+        mask      = F.one_hot(labels, num_classes=logits.size(1)).bool()
+        hardest   = logits.masked_fill(mask, float("-inf")).max(dim=1).values
+        all_train_margins.extend((pos_scores - hardest).cpu().tolist())
 
     return F.cross_entropy(logits, labels)
 
