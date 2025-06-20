@@ -96,6 +96,9 @@ def search(query):
         gt_doc_ids = [gt["doc_id"] for gt in ground_truth_docs]
         has_match = any(gt_id in top_doc_id for gt_id in gt_doc_ids)
 
+        logging.info(f"Top result: {documents[0]}")
+        logging.info(f"Ground truth: {ground_truth_docs[0]}")
+
     response = {
         "documents": documents,
         "ground_truth": ground_truth_similarities,
@@ -166,33 +169,6 @@ def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
         similarity = 1.0 - distance  # Convert distance to similarity
         text = doc.text
         search_results.append((doc_id, similarity, text))
-
-    logging.info(f"Found {len(search_results)} results:")
-    for i, (doc_id, similarity, text) in enumerate(search_results):
-        logging.info(f"  {i + 1}. {doc_id} (similarity: {similarity:.6f}): {text}...")
-
-    # --- START: FINAL DEBUG BLOCK ---
-    logging.info("--- RUNNING MANUAL VERIFICATION WITHIN APP ---")
-    # Manually check similarity against a known-good document from test_found_documents.py
-    known_good_doc_ids = ["doc:test_0_2", results.docs[0].id]
-    for known_good_doc_id in known_good_doc_ids:
-        good_doc_bytes = redis_client.hget(known_good_doc_id, "embedding")
-
-        if good_doc_bytes:
-            good_doc_vec = np.frombuffer(good_doc_bytes, dtype=np.float32)
-
-            # 'query_embedding' is the normalized numpy array from earlier in this function
-            # We use .flatten() just to be 100% sure it's 1D for the dot product
-            manual_similarity = np.dot(query_embedding.flatten(), good_doc_vec)
-
-            logging.info(
-                f"MANUAL SIMILARITY CHECK with '{known_good_doc_id}': {manual_similarity:.6f}"
-            )
-        else:
-            logging.info(
-                f"Could not find known-good doc '{known_good_doc_id}' for manual check."
-            )
-        # --- END: FINAL DEBUG BLOCK ---
 
     return search_results
 

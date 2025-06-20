@@ -4,6 +4,7 @@ uv.lock
 .venv/
 ms_marco_train.parquet
 wandb/
+eval_results.json
 
 *.orig
 *.rej
