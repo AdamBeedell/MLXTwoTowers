@@ -6,8 +6,8 @@ pyarrow
 redis
 requests
 streamlit
-torch
 tqdm
+# torch is not here! a separate command in setup_computa2.sh to match the cuda version only
 transformers
 uvicorn
 wandb
