@@ -7,7 +7,7 @@ redis
 requests
 streamlit
 tqdm
-# torch is not here! a separate command in setup_computa2.sh to match the cuda version only
+torch>=2.2
 transformers
 uvicorn
 wandb

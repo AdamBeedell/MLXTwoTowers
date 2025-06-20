@@ -23,7 +23,7 @@ services:
     build: .
     container_name: mlx-ui
     ports:
-      - "443:8501"
+      - "8501:8501"
     depends_on:
       - api
     volumes:

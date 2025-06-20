@@ -59,8 +59,11 @@ def mine_hard_negatives(
     For every query, pick the most similar *non‑positive* passage from a
     sampled pool of other positives and use it as the new negative.
     """
-    # ---- build candidate pool ------------------------------------------------
-    all_pos_texts = [t["positive_text"] for t in dataset.triplets]
+    # ---- resolve triplet source --------------------------------------------
+    triplets = dataset.triplets if hasattr(dataset, "triplets") else dataset
+
+    # ---- build candidate pool ----------------------------------------------
+    all_pos_texts = [t["positive_text"] for t in triplets]
     if len(all_pos_texts) > pool_size:
         all_pos_texts = random.sample(all_pos_texts, pool_size)
 
