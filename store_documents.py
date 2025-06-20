@@ -115,7 +115,6 @@ def encode_all_documents(tokenizer, doc_tower, documents, device, batch_size=100
 def store_embeddings_in_redis(doc_metadata, embeddings, redis_client):
     """Store document embeddings in Redis"""
 
-    redis_client.flushdb()
     pipeline = redis_client.pipeline(transaction=False)
     for doc_meta, embedding in tqdm(
         zip(doc_metadata, embeddings), desc="Storing in Redis"
@@ -186,6 +185,7 @@ def main():
     utils.setup_logging()
     device = utils.get_device()
     redis_client = redis.Redis(host="localhost", port=6379, db=0)
+    redis_client.flushdb()
     checkpoint = torch.load(utils.MODEL_FILE, map_location=device)
     tokenizer = Word2VecTokenizer()
     doc_tower = DocTower(
