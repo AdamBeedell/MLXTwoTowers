@@ -136,7 +136,14 @@ def validate_model(run, query_tower, doc_tower, validation_dataloader, epoch, de
 
     with torch.no_grad():  # Important: no gradients during validation
         for i, batch in tqdm(enumerate(validation_dataloader), desc="Validation"):
-            query, positive, negative = [b.to(device) for b in batch.values()]
+            # move only tensor items to the target device
+            batch = {
+                k: (v.to(device) if torch.is_tensor(v) else v) for k, v in batch.items()
+            }
+
+            query = batch["query"]
+            positive = batch["positive"]
+            negative = batch["negative"]
 
             # Forward pass (same as training)
             q = query_tower(query)
