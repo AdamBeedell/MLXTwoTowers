@@ -178,8 +178,10 @@ def get_ground_truth_docs(query):
         positive_docs = []
 
         for doc_id in positive_doc_ids:
-            doc_id_str = doc_id.decode("utf-8") if isinstance(doc_id, bytes) else doc_id
-            doc_data = redis_client.hmget(f"doc:{doc_id_str}", "text")
+            doc_id_str = (
+                "doc:" + doc_id.decode("utf-8") if isinstance(doc_id, bytes) else doc_id
+            )
+            doc_data = redis_client.hmget(f"{doc_id_str}", "text")
             if doc_data[0]:
                 text = (
                     doc_data[0].decode("utf-8")
@@ -217,7 +219,7 @@ def calculate_ground_truth_similarity(query, ground_truth_docs):
         for gt_doc in ground_truth_docs:
             doc_id = gt_doc["doc_id"]
             # Get document embedding from Redis
-            doc_embedding_bytes = redis_client.hget(f"doc:{doc_id}", "embedding")
+            doc_embedding_bytes = redis_client.hget(f"{doc_id}", "embedding")
             if doc_embedding_bytes:
                 doc_embedding = np.frombuffer(doc_embedding_bytes, dtype=np.float32)
                 similarity = np.dot(query_embedding, doc_embedding)
