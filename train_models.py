@@ -23,6 +23,7 @@ hyperparameters = {
     "epochs": 50,
     "dropout_rate": 0.1,
     "patience": 5,
+    "temperature": 0.05,
 }
 
 
@@ -172,19 +173,27 @@ def validate_model(run, query_tower, doc_tower, validation_dataloader, epoch, de
     return total_loss / num_batches, recall_at_k
 
 
-def training_loop_core(batch, query_tower, doc_tower, all_train_margins, zero):
-    q = query_tower(batch["query"])
-    pos = doc_tower(batch["positive"])
-    neg = doc_tower(batch["negative"])
+def training_loop_core(batch, query_tower, doc_tower, all_train_margins):
+    """
+    Multi-negative contrastive loss:
+    every other positive in the batch serves as a negative.
+    """
+    q = query_tower(batch["query"])  # [B,D] normalised
+    pos = doc_tower(batch["positive"])  # [B,D]
 
-    dst_pos = F.cosine_similarity(q, pos)
-    dst_neg = F.cosine_similarity(q, neg)
+    logits = torch.matmul(q, pos.T) / hyperparameters["temperature"]  # [B,B]
+    labels = torch.arange(q.size(0), device=q.device)  # [B]
 
-    margins = (dst_pos - dst_neg).detach().cpu()
-    all_train_margins.extend(margins.tolist())
+    # gather margins for monitoring (diag – best other)
+    with torch.no_grad():
+        diag = logits.diag()
+        masked = logits.masked_fill(
+            torch.eye(q.size(0), device=q.device).bool(), float("-inf")
+        )
+        best_neg = masked.max(dim=1).values
+        all_train_margins.extend((diag - best_neg).cpu().tolist())
 
-    loss = torch.max(zero, hyperparameters["margin"] - dst_pos + dst_neg).mean()
-    return loss
+    return F.cross_entropy(logits, labels)
 
 
 def main():
@@ -260,7 +269,7 @@ def main():
             optimizer.zero_grad()
             if device.type == "mps":
                 loss = training_loop_core(
-                    batch, query_tower, doc_tower, all_train_margins, zero
+                    batch, query_tower, doc_tower, all_train_margins
                 )
                 loss.backward()
                 total_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
@@ -268,11 +277,7 @@ def main():
             else:
                 with autocast(device_type=device.type):
                     loss = training_loop_core(
-                        batch,
-                        query_tower,
-                        doc_tower,
-                        all_train_margins,
-                        zero,
+                        batch, query_tower, doc_tower, all_train_margins
                     )
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
