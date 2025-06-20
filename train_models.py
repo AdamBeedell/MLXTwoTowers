@@ -94,6 +94,8 @@ def mine_hard_negatives(
 
     # ---- apply --------------------------------------------------------------
     dataset.replace_negatives(mapping)
+    query_tower.train()
+    doc_tower.train()
 
 
 def analyze_embedding_diversity(run, embeddings, name, epoch):
