@@ -96,6 +96,7 @@ def search(query):
         gt_doc_ids = [gt["doc_id"] for gt in ground_truth_docs]
         has_match = any(gt_id in top_doc_id for gt_id in gt_doc_ids)
 
+        logging.info(f"Query: {query}")
         logging.info(f"Top result: {documents[0]}")
         logging.info(f"Ground truth: {ground_truth_docs[0]}")
 
@@ -133,9 +134,6 @@ def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
         query_embedding = (
             query_tower(tokenized_query).cpu().numpy().astype(np.float32).flatten()
         )
-        logging.info(
-            f"Query embedding norm: {np.linalg.norm(query_embedding):.8f}",
-        )
 
         # Convert to bytes for Redis
         query_embedding_bytes = struct.pack(
@@ -145,7 +143,6 @@ def do_search(query, query_tower, redis_client, tokenizer, device, top_k=5):
         # --- START DEBUG CODE ---
         # Save the numpy array to a file for external verification
         np.save("debug_query_vector.npy", query_embedding)
-        logging.info("DEBUG: Saved query vector to debug_query_vector.npy")
         # --- END DEBUG CODE ---
 
     redis_query = f"*=>[KNN {top_k} @embedding $vec_param AS vector_score]"
@@ -238,7 +235,6 @@ def calculate_ground_truth_similarity(query, ground_truth_docs):
 @app.get("/random_query")
 def get_random_query():
     """Get a random query that has ground truth data"""
-    random.seed(42)
     all_queries = redis_client.smembers("all_queries")
     if not all_queries:
         return {"error": "No queries found in database"}
@@ -252,8 +248,6 @@ def get_random_query():
 
 ##### Log The Request #####
 def log_request(log_path, message):
-    # print the message and then write it to the log
-    print(message)
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     with open(log_path, "a") as log_file:
         log_file.write(message + "\n")

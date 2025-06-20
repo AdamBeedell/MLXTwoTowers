@@ -172,9 +172,7 @@ def validate_model(run, query_tower, doc_tower, validation_dataloader, epoch, de
     return total_loss / num_batches, recall_at_k
 
 
-def training_loop_core(
-    batch, query_tower, doc_tower, all_train_margins, optimizer, zero
-):
+def training_loop_core(batch, query_tower, doc_tower, all_train_margins, zero):
     q = query_tower(batch["query"])
     pos = doc_tower(batch["positive"])
     neg = doc_tower(batch["negative"])
@@ -262,7 +260,7 @@ def main():
             optimizer.zero_grad()
             if device.type == "mps":
                 loss = training_loop_core(
-                    batch, query_tower, doc_tower, all_train_margins, optimizer, zero
+                    batch, query_tower, doc_tower, all_train_margins, zero
                 )
                 loss.backward()
                 total_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
@@ -274,7 +272,6 @@ def main():
                         query_tower,
                         doc_tower,
                         all_train_margins,
-                        optimizer,
                         zero,
                     )
                 scaler.scale(loss).backward()

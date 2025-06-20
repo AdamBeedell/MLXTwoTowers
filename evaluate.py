@@ -5,7 +5,6 @@ from tqdm import tqdm
 import numpy as np
 import argparse
 import logging
-from collections import defaultdict
 
 # Configuration
 FASTAPI_URL = "http://localhost:8000"
